@@ -1,0 +1,7 @@
+# main.fray — import a sibling module, or pull names out of it.
+import mathutil
+from mathutil import shout
+
+print(mathutil.add(2, 3))
+print(mathutil.multiply(4, 5))
+print(shout("modules work"))

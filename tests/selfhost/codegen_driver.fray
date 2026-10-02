@@ -1,0 +1,39 @@
+# tests/selfhost/codegen_driver.fray — exercises compiler/codegen.fray's entry
+# point on a hand-built AST.
+#
+# The codegen's real input is a parsed program, and building one by hand is
+# shallow compared with what the parser produces — but it drives the module's
+# entry point, its builder state and its IR emission for real, inside a
+# compiled binary, which is what a Stage-1 smoke check needs. Deeper ASTs are
+# the natural extension once the modules can be linked together (see plan.md).
+
+empty = {}
+empty["type"] = "PROGRAM"
+empty["body"] = []
+
+ir = compile_ir(empty)
+print(len(ir))
+print("define i32 @\"main\"()" in ir)
+print("fray_int" in ir)
+print(len(get_errors()))
+
+# A program with a single expression statement: the module pass, the statement
+# dispatch and expression generation all run.
+one = {}
+one["type"] = "PROGRAM"
+one["body"] = []
+
+stmt = {}
+stmt["type"] = "EXPR_STMT"
+# The parser encodes a literal's value as text (see its INT_LITERAL node), and
+# the codegen splices it straight into the IR, so a driver must pass a string.
+lit = {}
+lit["type"] = "INT_LITERAL"
+lit["value"] = "42"
+stmt["expr"] = lit
+one["body"].append(stmt)
+
+ir2 = compile_ir(one)
+print(len(ir2) > len(ir))
+print("fray_int" in ir2)
+print(len(get_errors()))

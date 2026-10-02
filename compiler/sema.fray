@@ -1,0 +1,626 @@
+# compiler/sema.fray — Self-hosted semantic analyzer for fray
+#
+# Performs name resolution, const enforcement, control-flow checks,
+# basic type inference, and struct/enum/map method checking.
+#
+# Usage: import parser, sema; errors = sema.analyze(ast, "file.fray")
+
+import parser
+
+# ─── Error collection ───
+
+errors = []
+
+def sema_error(msg, line, col):
+    errors.append(str(line) + ":" + str(col) + ": " + msg)
+
+# ─── Scope ───
+
+def make_scope():
+    return {"names": [], "consts": [], "types": []}
+
+def scope_define(s, name, ty):
+    i = 0
+    while i < len(s["names"]):
+        if s["names"][i] == name:
+            if ty != "?" and s["types"][i] == "?":
+                s["types"][i] = ty
+            return False
+        i = i + 1
+    s["names"].append(name)
+    s["consts"].append("")
+    s["types"].append(ty)
+    return True
+
+def scope_define_const(s, name, ty):
+    i = 0
+    found = False
+    while i < len(s["names"]):
+        if s["names"][i] == name:
+            found = True
+            if ty != "?" and s["types"][i] == "?":
+                s["types"][i] = ty
+        i = i + 1
+    if not found:
+        s["names"].append(name)
+        s["consts"].append("const")
+        s["types"].append(ty)
+    i = 0
+    while i < len(s["consts"]):
+        if s["consts"][i] != "const" and i < len(s["names"]) and s["names"][i] == name:
+            s["consts"][i] = "const"
+        i = i + 1
+
+def scope_is_defined(s, name):
+    i = 0
+    while i < len(s["names"]):
+        if s["names"][i] == name:
+            return True
+        i = i + 1
+    return False
+
+def scope_is_const(s, name):
+    i = 0
+    while i < len(s["names"]):
+        if s["names"][i] == name and i < len(s["consts"]) and s["consts"][i] == "const":
+            return True
+        i = i + 1
+    return False
+
+def scope_get_type(s, name):
+    i = 0
+    while i < len(s["names"]):
+        if s["names"][i] == name:
+            return s["types"][i]
+        i = i + 1
+    return "?"
+
+def scope_set_type(s, name, ty):
+    i = 0
+    while i < len(s["names"]):
+        if s["names"][i] == name:
+            if ty != "?" and s["types"][i] == "?":
+                s["types"][i] = ty
+            elif ty != "?" and s["types"][i] != ty and s["types"][i] != "?":
+                s["types"][i] = "?"
+            return
+        i = i + 1
+
+# ─── Analyzer state ───
+
+struct SemaState:
+    scopes
+    in_loop
+    in_function
+    filename
+    struct_defs
+    struct_defaults
+    enum_defs
+
+def make_sema_state(filename):
+    st = SemaState()
+    st.scopes = []
+    st.in_loop = False
+    st.in_function = False
+    st.filename = filename
+    st.struct_defs = {}
+    st.struct_defaults = {}
+    st.enum_defs = {}
+    return st
+
+def push_scope(st):
+    st.scopes.append(make_scope())
+
+def pop_scope(st):
+    new_scopes = []
+    i = 0
+    while i < len(st.scopes) - 1:
+        new_scopes.append(st.scopes[i])
+        i = i + 1
+    st.scopes = new_scopes
+
+def current_scope(st):
+    return st.scopes[len(st.scopes) - 1]
+
+def resolve_name(st, name):
+    i = len(st.scopes) - 1
+    while i >= 0:
+        if scope_is_defined(st.scopes[i], name):
+            return True
+        i = i - 1
+    return False
+
+def is_const_name(st, name):
+    i = len(st.scopes) - 1
+    while i >= 0:
+        if scope_is_defined(st.scopes[i], name):
+            return scope_is_const(st.scopes[i], name)
+        i = i - 1
+    return False
+
+def get_type(st, name):
+    i = len(st.scopes) - 1
+    while i >= 0:
+        if scope_is_defined(st.scopes[i], name):
+            return scope_get_type(st.scopes[i], name)
+        i = i - 1
+    return "?"
+
+def set_type(st, name, ty):
+    i = len(st.scopes) - 1
+    while i >= 0:
+        if scope_is_defined(st.scopes[i], name):
+            scope_set_type(st.scopes[i], name, ty)
+            return
+        i = i - 1
+
+# ─── Known exception types ───
+
+KNOWN_EXC = ["TypeError", "ValueError", "IndexError", "KeyError", "NameError", "RuntimeError", "OverflowError", "ZeroDivisionError", "ImportError", "Exception"]
+
+def is_known_exception(name):
+    i = 0
+    while i < len(KNOWN_EXC):
+        if KNOWN_EXC[i] == name:
+            return True
+        i = i + 1
+    return False
+
+# ─── Built-in names ───
+
+BUILTINS = ["print", "input", "inputStr", "inputInt", "inputFloat", "len", "min", "max", "sum", "abs", "sqrt", "isqrt", "round", "int", "float", "str", "range", "mean", "med", "mode", "mid", "spawn", "join", "joinAll", "atomic", "sleep", "channel", "send", "recv", "close", "coroCount", "yield", "yieldNow", "runUntilComplete", "progName", "programArgs", "fileRead", "fileExists", "fileWrite", "listDir", "isDir", "readFileAsync", "writeFileAsync", "readAsync", "writeAsync", "tcpListen", "tcpAccept", "tcpConnect", "closeSocket", "tcpPort", "exit", "True", "False", "null"]
+
+BUILTIN_RETURNS = {"print": "none", "len": "int", "abs": "int", "isqrt": "int", "round": "int", "range": "list", "int": "int", "float": "float", "str": "string", "input": "string", "inputStr": "string", "inputInt": "int", "inputFloat": "float", "sqrt": "float", "sum": "int", "min": "int", "max": "int", "progName": "string", "programArgs": "list", "fileRead": "string", "fileExists": "bool", "listDir": "list", "isDir": "bool", "readFileAsync": "string", "readAsync": "string", "writeFileAsync": "int", "writeAsync": "int", "tcpListen": "int", "tcpAccept": "int", "tcpConnect": "int", "closeSocket": "none", "tcpPort": "int"}
+
+# ─── Method definitions ───
+
+MAP_METHODS = {"keys": "list", "has": "bool", "len": "int"}
+STRING_METHODS = {"upper": "string", "lower": "string", "trim": "string", "find": "int", "replace": "string", "split": "list", "startswith": "bool", "endswith": "bool"}
+LIST_METHODS = {"append": "none", "depend": "?"}
+
+# ─── Type helpers ───
+
+def is_numeric(ty):
+    return ty == "int" or ty == "float"
+
+def is_logical_op(op):
+    # 'and'/'or'/'xor'/'xnor' accept any operands: they are defined on
+    # truthiness, so bool mixed with a number is not a type error (the oracle
+    # does not reject it either — see short_circuit.fray).
+    return op == "and" or op == "or" or op == "xor" or op == "xnor"
+
+def type_join(t1, t2):
+    if t1 == t2:
+        return t1
+    if t1 == "int" and t2 == "float":
+        return "float"
+    if t1 == "float" and t2 == "int":
+        return "float"
+    if t1 == "none" or t2 == "none":
+        return "?"
+    return "?"
+
+def binop_result_type(op, t1, t2):
+    if op == "+" or op == "+=":
+        if t1 == "string" and t2 == "string":
+            return "string"
+        if t1 == "string" and t2 == "int":
+            return "string"
+        if t1 == "int" and t2 == "string":
+            return "string"
+        if is_numeric(t1) and is_numeric(t2):
+            return type_join(t1, t2)
+        return "?"
+    if op == "-" or op == "-=" or op == "*" or op == "*=":
+        if is_numeric(t1) and is_numeric(t2):
+            return type_join(t1, t2)
+        if op == "*" and t1 == "string" and t2 == "int":
+            return "string"
+        if op == "*" and t1 == "int" and t2 == "string":
+            return "string"
+        return "?"
+    if op == "/" or op == "/=" or op == "//" or op == "%":
+        if is_numeric(t1) and is_numeric(t2):
+            return "float"
+        return "?"
+    if op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" or op == "in":
+        return "bool"
+    if op == "and" or op == "or":
+        return "bool"
+    return "?"
+
+# ─── AST field access helpers ───
+
+def node_type(node):
+    if node == null:
+        return ""
+    return node["type"]
+
+def node_line(node):
+    if node == null:
+        return 0
+    if "line" in node:
+        return node["line"]
+    return 0
+
+def node_col(node):
+    if node == null:
+        return 0
+    if "col" in node:
+        return node["col"]
+    return 0
+
+def node_get(node, key, default_val):
+    if node == null:
+        return default_val
+    if key in node:
+        return node[key]
+    return default_val
+
+# Declared defaults for a struct's fields, positionally. Empty when the struct
+# is unknown or declares none.
+def struct_defaults_of(st, name):
+    if name in st.struct_defaults:
+        return st.struct_defaults[name]
+    return []
+
+# ─── Expression checking ───
+
+def check_expr(st, node):
+    if node == null:
+        return "none"
+    nt = node_type(node)
+    if nt == "INT_LITERAL":
+        return "int"
+    if nt == "FLOAT_LITERAL":
+        return "float"
+    if nt == "STRING_LITERAL":
+        return "string"
+    if nt == "BOOL_LITERAL":
+        return "bool"
+    if nt == "NONE_LITERAL":
+        return "none"
+    if nt == "IDENTIFIER":
+        return get_type(st, node["name"])
+    if nt == "BINARY_OP":
+        t1 = check_expr(st, node["left"])
+        t2 = check_expr(st, node["right"])
+        op = node["op"]
+        if t1 != "?" and t2 != "?" and t1 != "none" and t2 != "none":
+            if t1 == "string" and t2 == "float" and (op == "*" or op == "*="):
+                sema_error("type mismatch: cannot multiply string by float", node_line(node), node_col(node))
+            elif t1 == "float" and t2 == "string" and (op == "*" or op == "*="):
+                sema_error("type mismatch: cannot multiply float by string", node_line(node), node_col(node))
+            elif is_numeric(t1) and t2 == "bool" and not is_logical_op(op):
+                sema_error("type mismatch: cannot apply '" + op + "' to " + t1 + " and " + t2, node_line(node), node_col(node))
+            elif t1 == "bool" and is_numeric(t2) and not is_logical_op(op):
+                sema_error("type mismatch: cannot apply '" + op + "' to " + t1 + " and " + t2, node_line(node), node_col(node))
+        return binop_result_type(op, t1, t2)
+    if nt == "UNARY_OP":
+        t = check_expr(st, node["operand"])
+        return t
+    if nt == "AWAIT_EXPR":
+        # await expr — the result is whatever the awaited coroutine returns,
+        # which is not known here, so it types as "?" (never a raw slot).
+        check_expr(st, node["value"])
+        return "?"
+    if nt == "CALL":
+        fn = node["func"]
+        fn_name = ""
+        if node_type(fn) == "IDENTIFIER":
+            fn_name = fn["name"]
+        if fn_name in BUILTIN_RETURNS:
+            i = 0
+            while i < len(node["args"]):
+                check_expr(st, node["args"][i])
+                i = i + 1
+            return BUILTIN_RETURNS[fn_name]
+        # Struct construction. `Name(args)` where Name is a struct is not an
+        # ordinary call: trailing fields may be omitted, and the spec and the
+        # oracle then use the field's declared default. This compiler builds
+        # an omitted field as None instead, so a constructor that would need a
+        # default is reported — a silently different program is worse than a
+        # rejection (the parser used to hang here instead; see plan.md).
+        if fn_name != "" and fn_name in st.struct_defs:
+            fields = st.struct_defs[fn_name]
+            defaults = struct_defaults_of(st, fn_name)
+            i = 0
+            while i < len(node["args"]):
+                check_expr(st, node["args"][i])
+                i = i + 1
+            j = len(node["args"])
+            while j < len(fields):
+                if j < len(defaults) and defaults[j] != null:
+                    sema_error("struct '" + fn_name + "' constructor omits field '" + fields[j] + "', which declares a default: the self-hosted compiler does not implement field defaults yet — pass every field explicitly", node_line(fn), node_col(fn))
+                    return "?"
+                j = j + 1
+            return "?"
+        # Check function defined in this program
+        if fn_name != "" and resolve_name(st, fn_name):
+            i = 0
+            while i < len(node["args"]):
+                check_expr(st, node["args"][i])
+                i = i + 1
+            return "?"
+        # Member access call: obj.method(args)
+        if node_type(fn) == "MEMBER_ACCESS":
+            obj_type = check_expr(st, fn["obj"])
+            method = fn["attr"]
+            i = 0
+            while i < len(node["args"]):
+                check_expr(st, node["args"][i])
+                i = i + 1
+            # Check map methods
+            if obj_type == "map" and method in MAP_METHODS:
+                return MAP_METHODS[method]
+            # Check string methods
+            if obj_type == "string" and method in STRING_METHODS:
+                return STRING_METHODS[method]
+            # Check list methods. Sets are list-backed in the runtime (see
+            # codegen SET_LITERAL and runtime/ops.c), so they take the same
+            # methods — rejecting s.append(x) would reject a valid program.
+            if (obj_type == "list" or obj_type == "set") and method in LIST_METHODS:
+                return LIST_METHODS[method]
+            # Check struct field calls (constructor)
+            if obj_type != "?" and obj_type != "none":
+                sema_error("type '" + obj_type + "' has no method '" + method + "'", node_line(fn), node_col(fn))
+            return "?"
+        i = 0
+        while i < len(node["args"]):
+            check_expr(st, node["args"][i])
+            i = i + 1
+        return "?"
+    if nt == "MEMBER_ACCESS":
+        obj_type = check_expr(st, node["obj"])
+        attr = node["attr"]
+        # Check if accessing a struct field
+        if obj_type in st.struct_defs:
+            fields = st.struct_defs[obj_type]
+            i = 0
+            while i < len(fields):
+                if fields[i] == attr:
+                    return "?"
+                i = i + 1
+            sema_error("struct '" + obj_type + "' has no field '" + attr + "'", node_line(node), node_col(node))
+            return "?"
+        # Check if accessing an enum variant
+        if obj_type in st.enum_defs:
+            return "?"
+        # Map methods are handled in CALL, not here
+        return "?"
+    if nt == "INDEX_ACCESS":
+        check_expr(st, node["obj"])
+        check_expr(st, node["index"])
+        return "?"
+    if nt == "LIST_LITERAL":
+        i = 0
+        while i < len(node["elements"]):
+            check_expr(st, node["elements"][i])
+            i = i + 1
+        return "list"
+    if nt == "SET_LITERAL":
+        i = 0
+        while i < len(node["elements"]):
+            check_expr(st, node["elements"][i])
+            i = i + 1
+        return "set"
+    if nt == "MAP_LITERAL":
+        i = 0
+        while i < len(node["keys"]):
+            check_expr(st, node["keys"][i])
+            check_expr(st, node["values"][i])
+            i = i + 1
+        return "map"
+    return "?"
+
+# ─── Target checking ───
+
+def check_target(st, node):
+    if node == null:
+        return
+    nt = node_type(node)
+    if nt == "IDENTIFIER":
+        name = node["name"]
+        if is_const_name(st, name):
+            sema_error("cannot reassign const '" + name + "'", node_line(node), node_col(node))
+        if not resolve_name(st, name):
+            scope_define(current_scope(st), name, "?")
+    elif nt == "MEMBER_ACCESS":
+        check_expr(st, node["obj"])
+    elif nt == "INDEX_ACCESS":
+        check_expr(st, node["obj"])
+        check_expr(st, node["index"])
+
+# ─── Statement checking ───
+
+def check_statement(st, node):
+    if node == null:
+        return
+    nt = node_type(node)
+    line = node_line(node)
+    col = node_col(node)
+    if nt == "ASSIGNMENT":
+        check_target(st, node["target"])
+        ty = check_expr(st, node["value"])
+        if node_type(node["target"]) == "IDENTIFIER":
+            set_type(st, node["target"]["name"], ty)
+    elif nt == "EXPR_STMT":
+        check_expr(st, node["expr"])
+    elif nt == "RETURN_STMT":
+        if not st.in_function:
+            sema_error("'return' outside of function", line, col)
+        val = node_get(node, "value", null)
+        if val != null:
+            check_expr(st, val)
+    elif nt == "CONST_STMT":
+        ty = check_expr(st, node["value"])
+        scope_define_const(current_scope(st), node["name"], ty)
+    elif nt == "IMPORT_STMT":
+        1
+    elif nt == "EXTERN_DECL":
+        scope_define(current_scope(st), node["name"], "?")
+    elif nt == "STRUCT_DEF":
+        # Track struct definition: name -> [field_names], plus the declared
+        # default expression for each field (null when the field has none).
+        fields = node_get(node, "fields", [])
+        st.struct_defs[node["name"]] = fields
+        st.struct_defaults[node["name"]] = node_get(node, "field_defaults", [])
+        scope_define(current_scope(st), node["name"], "?")
+    elif nt == "ENUM_DEF":
+        # Track enum definition: name -> {cases: [(name, [params])]}
+        cases_raw = node_get(node, "cases", [])
+        cases = []
+        i = 0
+        while i < len(cases_raw):
+            c = cases_raw[i]
+            cases.append((c["name"], c["params"]))
+            i = i + 1
+        st.enum_defs[node["name"]] = {"cases": cases}
+        scope_define(current_scope(st), node["name"], "?")
+    elif nt == "FUNCTION_DEF":
+        scope_define(current_scope(st), node["name"], "?")
+        push_scope(st)
+        old_in_func = st.in_function
+        st.in_function = True
+        i = 0
+        while i < len(node["params"]):
+            scope_define(current_scope(st), node["params"][i], "?")
+            i = i + 1
+        i = 0
+        while i < len(node["body"]):
+            check_statement(st, node["body"][i])
+            i = i + 1
+        st.in_function = old_in_func
+        pop_scope(st)
+    elif nt == "IF_STMT":
+        check_expr(st, node["cond"])
+        push_scope(st)
+        i = 0
+        while i < len(node["body"]):
+            check_statement(st, node["body"][i])
+            i = i + 1
+        pop_scope(st)
+        i = 0
+        while i < len(node["elif_branches"]):
+            branch = node["elif_branches"][i]
+            check_expr(st, branch["cond"])
+            push_scope(st)
+            j = 0
+            while j < len(branch["body"]):
+                check_statement(st, branch["body"][j])
+                j = j + 1
+            pop_scope(st)
+            i = i + 1
+        else_body = node_get(node, "else_body", null)
+        if else_body != null:
+            push_scope(st)
+            i = 0
+            while i < len(else_body):
+                check_statement(st, else_body[i])
+                i = i + 1
+            pop_scope(st)
+    elif nt == "FOR_LOOP":
+        iter_type = check_expr(st, node["iterable"])
+        # The runtime's loop accessor takes a list (and, for maps, codegen asks
+        # for the keys list first). Iterating a string yields characters in the
+        # oracle but hits "TypeError: not a list" in both native engines, so a
+        # program that does it is reported here rather than compiled into a run
+        # time abort — see plan.md.
+        if iter_type == "string":
+            sema_error("iterating a string is not supported by the self-hosted compiler yet — the oracle yields its characters, but the native runtime has no string iterator", node_line(node), node_col(node))
+        push_scope(st)
+        scope_define(current_scope(st), node["var"], "int")
+        old_in_loop = st.in_loop
+        st.in_loop = True
+        i = 0
+        while i < len(node["body"]):
+            check_statement(st, node["body"][i])
+            i = i + 1
+        st.in_loop = old_in_loop
+        pop_scope(st)
+    elif nt == "WHILE_LOOP":
+        check_expr(st, node["cond"])
+        push_scope(st)
+        old_in_loop = st.in_loop
+        st.in_loop = True
+        i = 0
+        while i < len(node["body"]):
+            check_statement(st, node["body"][i])
+            i = i + 1
+        st.in_loop = old_in_loop
+        pop_scope(st)
+    elif nt == "TRY_STMT":
+        i = 0
+        while i < len(node["body"]):
+            check_statement(st, node["body"][i])
+            i = i + 1
+        i = 0
+        while i < len(node["except_clauses"]):
+            clause = node["except_clauses"][i]
+            exc_type = clause["type"]
+            if exc_type != null and not is_known_exception(exc_type):
+                sema_error("unknown exception type '" + exc_type + "'", line, col)
+            push_scope(st)
+            exc_name = clause["name"]
+            if exc_name != null:
+                scope_define(current_scope(st), exc_name, "?")
+            j = 0
+            while j < len(clause["body"]):
+                check_statement(st, clause["body"][j])
+                j = j + 1
+            pop_scope(st)
+            i = i + 1
+        finally_body = node_get(node, "finally_body", null)
+        if finally_body != null:
+            push_scope(st)
+            i = 0
+            while i < len(finally_body):
+                check_statement(st, finally_body[i])
+                i = i + 1
+            pop_scope(st)
+    elif nt == "MATCH_EXPR":
+        check_expr(st, node["subject"])
+        i = 0
+        while i < len(node["arms"]):
+            arm = node["arms"][i]
+            push_scope(st)
+            j = 0
+            while j < len(arm["params"]):
+                scope_define(current_scope(st), arm["params"][j], "?")
+                j = j + 1
+            j = 0
+            while j < len(arm["body"]):
+                check_statement(st, arm["body"][j])
+                j = j + 1
+            pop_scope(st)
+            i = i + 1
+    elif nt == "BREAK_STMT":
+        if not st.in_loop:
+            sema_error("'break' outside of loop", line, col)
+    elif nt == "CONTINUE_STMT":
+        if not st.in_loop:
+            sema_error("'continue' outside of loop", line, col)
+    elif nt == "DEL_STMT":
+        target = node_get(node, "target", null)
+        check_expr(st, target)
+    elif nt == "AUG_ASSIGNMENT":
+        check_target(st, node["target"])
+        check_expr(st, node["value"])
+
+# ─── Main entry point ───
+
+def analyze(program, filename):
+    while len(errors) > 0:
+        errors.depend()
+    st = make_sema_state(filename)
+    push_scope(st)
+    i = 0
+    while i < len(BUILTINS):
+        scope_define(current_scope(st), BUILTINS[i], "?")
+        i = i + 1
+    i = 0
+    while i < len(program["body"]):
+        check_statement(st, program["body"][i])
+        i = i + 1
+    pop_scope(st)
+    return errors

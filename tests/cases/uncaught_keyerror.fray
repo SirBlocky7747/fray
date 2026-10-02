@@ -1,0 +1,16 @@
+# The oracle catches exactly the five exception types it can name, so a bare
+# `except:` does not take a map's KeyError: the exception passes the clause and
+# stops the program (uncaught_keyerror.exit). The compiled engines follow the
+# oracle rather than being more permissive than it.
+#
+# No output before the failing statement: the oracle loses collected output
+# when a program dies (plan.md), so stdout must be empty in every engine for
+# the case to compare. A bare except that wrongly caught this would print and
+# exit 0, failing on both counts.
+
+m = {1: 1}
+try:
+    v = m[2]
+except:
+    print("bare except should not catch a key error")
+print("not reached")

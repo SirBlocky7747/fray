@@ -1,0 +1,17 @@
+# compiler/test_lexer.fray — Test the self-hosted lexer
+import lexer
+
+# Test source: a simple fray program
+src = "def add(a, b):\n    return a + b\n\nx = add(1, 2)\nprint(x)\n"
+
+tokens = lexer.tokenize(src)
+
+# Expected token sequence:
+# NEWLINE, DEF, IDENT(add), LPAREN, IDENT(a), COMMA, IDENT(b), RPAREN, COLON,
+# NEWLINE, INDENT, RETURN, IDENT(a), PLUS, IDENT(b), NEWLINE, DEDENT,
+# NEWLINE, IDENT(x), ASSIGN, IDENT(add), LPAREN, INT(1), COMMA, INT(2), RPAREN, NEWLINE,
+# NEWLINE, IDENT(print), LPAREN, IDENT(x), RPAREN, NEWLINE,
+# NEWLINE, EOF
+
+for tok in tokens:
+    print(tok.tt + " " + tok.val)

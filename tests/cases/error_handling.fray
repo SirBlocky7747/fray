@@ -1,0 +1,17 @@
+# try/except/finally
+try:
+    x = 1 + "10"
+except TypeError:
+    print("type error caught")
+finally:
+    print("finally ran")
+
+# no error
+try:
+    x = 1 + 2
+except TypeError:
+    print("should not see this")
+finally:
+    print("clean finally")
+
+print("done")

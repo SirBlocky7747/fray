@@ -1,0 +1,5 @@
+# Phase 5 benchmark: string concatenation churn
+acc = ""
+for i in range(30000):
+    acc = acc + "x"
+print(len(acc))

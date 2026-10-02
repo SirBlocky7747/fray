@@ -1,0 +1,30 @@
+# errors.fray — try/except/finally, then Option and Result.
+xs = [1, 2, 3]
+
+try:
+    v = xs[9]              # the runtime raises IndexError
+    print(v)
+except IndexError:
+    print("caught the index error")
+finally:
+    print("cleanup ran")
+
+try:
+    q = 1 / 0
+    print(q)
+except Exception:
+    print("caught the division by zero")
+
+# A function that can fail reports it as a value: Result.
+def safe_divide(a, b):
+    if b == 0:
+        return Err("division by zero")
+    return Ok(a / b)
+
+print("ok: " + str(unwrap(safe_divide(10, 4))))
+print("err: " + str(isErr(safe_divide(10, 0))))
+
+x = Some(42)
+print("isSome: " + str(isSome(x)))
+print("unwrapped: " + str(x?))
+print("isNone: " + str(isNone(Some(1))) + " " + str(isNone(null)))

@@ -1,0 +1,8 @@
+PASS: and short-circuits
+PASS: or short-circuits
+PASS: chained and
+PASS: chained or
+PASS: while and loop, pos=5
+PASS: for with and, count=4
+PASS: nested, val=2
+PASS: or with call, result=42

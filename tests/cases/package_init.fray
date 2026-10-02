@@ -1,0 +1,11 @@
+# tests/cases/package_init.fray — a package split across files, with an
+# initializer that re-exports names (`from geom import double` reaches
+# geom/util.fray through geom/__init__.fray).
+from geom import describe, double
+from geom.util import offset
+from geom.sub import quadruple
+
+print(describe(4))
+print(double(5))
+print(offset())
+print(quadruple(4))

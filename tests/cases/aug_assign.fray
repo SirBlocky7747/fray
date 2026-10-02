@@ -1,0 +1,45 @@
+# Augmented assignment on all target kinds
+struct Counter:
+    total
+    step
+
+c = Counter()
+c.total = 10
+c.step = 2
+c.total += c.step
+print(c.total)
+
+c.total -= 4
+print(c.total)
+
+c.step *= 5
+print(c.step)
+
+# map index targets
+m = {"a": 1, "b": 2}
+m["a"] += 10
+m["b"] *= 3
+print(m["a"])
+print(m["b"])
+
+# list index targets
+lst = [5, 6, 7]
+lst[0] += 1
+lst[2] -= 3
+print(lst[0])
+print(lst[2])
+
+# plain identifier targets, mixed ops
+x = 100
+x //= 7
+x %= 5
+x ^= 2
+print(x)
+
+# aug-assign inside loops (domination-prone)
+s = 0
+i = 0
+while i < 4:
+    s += i
+    i += 1
+print(s)

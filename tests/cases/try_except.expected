@@ -1,0 +1,9 @@
+bare except caught the index error
+second named clause matched
+Exception caught the division by zero
+RuntimeError caught the index error
+outer try caught it
+caught
+finally ran
+clean finally ran
+done

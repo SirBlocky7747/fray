@@ -1,0 +1,25 @@
+# range(start, stop) and range(start, stop, step): as a for-loop iterable, as a
+# value, and as the argument of another builtin. The native compiler used to
+# pass only the first bound to fray_range, so range(1, 5) iterated range(1).
+for i in range(1, 5):
+    print(i)
+
+for i in range(0, 10, 3):
+    print(i)
+
+for i in range(3, 0, -1):
+    print(i)
+
+xs = range(2, 5)
+print(len(xs))
+print(xs)
+
+def total(lo, hi):
+    t = 0
+    for i in range(lo, hi):
+        t += i
+    return t
+
+print(total(1, 4))
+print(range(0, 6, 2))
+print(sum(range(1, 5)))

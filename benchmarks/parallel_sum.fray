@@ -1,0 +1,45 @@
+# Phase 6 benchmark: parallel integer sum.
+# Four no-arg workers split a range, each summing its slice into a shared
+# atomic. Thread scaling is the point: the same work single-threaded takes
+# roughly 4x as long.
+
+total = atomic(0)
+
+def w1():
+    i = 0
+    s = 0
+    while i < 2000000:
+        s += i % 7
+        i += 1
+    total.add(s)
+
+def w2():
+    i = 2000000
+    s = 0
+    while i < 4000000:
+        s += i % 7
+        i += 1
+    total.add(s)
+
+def w3():
+    i = 4000000
+    s = 0
+    while i < 6000000:
+        s += i % 7
+        i += 1
+    total.add(s)
+
+def w4():
+    i = 6000000
+    s = 0
+    while i < 8000000:
+        s += i % 7
+        i += 1
+    total.add(s)
+
+spawn(w1)
+spawn(w2)
+spawn(w3)
+spawn(w4)
+joinAll()
+print(total.get())

@@ -1,0 +1,8 @@
+# compiler/test_lexer2.fray — Test lexer with complex features
+import lexer
+
+src = "# comment\n\"hello world\"\n42\n3.14\n== != <= >= // += -= *= /=\nenum Color:\n    case Red\n    case Green\nmatch x:\n    case Color.Red:\n        print(\"red\")\n    case _:\n        print(\"other\")\n"
+
+tokens = lexer.tokenize(src)
+for tok in tokens:
+    print(tok.tt + " " + tok.val)

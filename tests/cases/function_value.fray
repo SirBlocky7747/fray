@@ -1,0 +1,42 @@
+# A function used as a value is a function object, and a call site that cannot
+# resolve its callee statically (a struct field) goes through fray_call, which
+# validates the callee and the argument count. Before this the field held None:
+# the name loaded the null module slot of the same name.
+def add(x, y):
+    return x + y
+
+def shout():
+    return "hi"
+
+struct Holder:
+    fn = 0
+    label = ""
+
+h = Holder(add, "add")
+print(h.fn(2, 3))
+print(h.label)
+
+s = Holder(shout, "shout")
+print(s.fn())
+
+# The value itself prints as the runtime's function repr, which is what the
+# oracle prints too (`<function shout>`), so a bare name in value position is
+# visible here rather than silently None.
+print(s.fn)
+print(add)
+
+# A value in a variable, and one passed as an argument and called back — the
+# map/filter shape, which is the same call path.
+g = add
+print(g(4, 5))
+
+def twice_via(g, n):
+    return g(g(n, 1), 1)
+
+print(twice_via(add, 5))
+
+# And a value reached through a container, which is a callee expression rather
+# than a name.
+fs = []
+fs.append(add)
+print(fs[0](6, 7))

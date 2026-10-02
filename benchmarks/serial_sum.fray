@@ -1,0 +1,46 @@
+# Phase 6 benchmark baseline: the same 8M-iteration work single-threaded.
+# Compare wall time against parallel_sum.fray (4 threads) to show scaling.
+# Each worker sums its slice; the atomic-free total combines the slices.
+
+s1 = 0
+s2 = 0
+s3 = 0
+s4 = 0
+
+def w1():
+    i = 0
+    s = 0
+    while i < 2000000:
+        s += i % 7
+        i += 1
+    s1 = s
+
+def w2():
+    i = 2000000
+    s = 0
+    while i < 4000000:
+        s += i % 7
+        i += 1
+    s2 = s
+
+def w3():
+    i = 4000000
+    s = 0
+    while i < 6000000:
+        s += i % 7
+        i += 1
+    s3 = s
+
+def w4():
+    i = 6000000
+    s = 0
+    while i < 8000000:
+        s += i % 7
+        i += 1
+    s4 = s
+
+w1()
+w2()
+w3()
+w4()
+print(s1 + s2 + s3 + s4)

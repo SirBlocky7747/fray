@@ -1,0 +1,60 @@
+# compiler/main.fray — the self-hosted compiler as a single program
+#
+# This file imports the compiler modules by name (lexer, parser, sema, codegen
+# and the linker) and drives them over an embedded two-module program. Building
+# it with the self-hosted compiler resolves those imports and links every
+# module into ONE binary — the replacement for the host-side amalgamation that
+# used to rename the shared `get_errors`/`node_type`/`errors` symbols. The
+# binary then links its own embedded modules at run time through the same
+# `link` pass, so both the compile-time and the run-time case are exercised.
+#
+# tools/check_frontend.py --single-unit builds this file, runs the binary, and
+# compares its output with the oracle's on the same source.
+
+import lexer
+import parser
+import sema
+import codegen
+import link
+
+
+def report(label, n):
+    print(label + " " + str(n))
+
+
+# `mathy` defines `square`; the main source imports it both qualified and
+# through a from-import, so the link pass resolves both reference forms.
+mathy_src = "def square(x):\n    return x * x\n"
+
+main_src = "import mathy\nfrom mathy import square\nprint(mathy.square(3))\nprint(square(4))\n"
+
+catalog = {}
+catalog["mathy"] = mathy_src
+
+# No package initializers in this catalog, so no module is a package.
+packages = {}
+
+lexer.clear_errors()
+tokens = lexer.tokenize(main_src)
+main_ast = parser.parse(tokens)
+report("main_tokens", len(tokens))
+
+linked = link.link(main_ast, catalog, packages)
+report("link_errors", len(link.get_errors()))
+report("linked_stmts", len(linked["body"]))
+
+errs = sema.analyze(linked, "<main>")
+report("sema_errors", len(errs))
+
+codegen.clear_errors()
+ir = codegen.compile_ir(linked)
+report("codegen_errors", len(codegen.get_errors()))
+report("ir_len", len(ir))
+if "define i8* @\"square\"" in ir:
+    print("square True")
+else:
+    print("square False")
+if "fray_print" in ir:
+    print("print True")
+else:
+    print("print False")

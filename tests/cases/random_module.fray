@@ -1,0 +1,31 @@
+# tests/cases/random_module.fray — the standard library's `random` module.
+#
+# stdlib/random.fray is a pure-fray 31-bit LCG, so a run is reproducible and
+# both engines agree digit for digit. This pins the sequence (a change to the
+# generator's constants or to `_step` shows up here) and each documented entry
+# point: randomInt inclusive at both ends, randomFloat in [lo, hi), choice, and
+# the in-place shuffle.
+
+import random
+
+print(random.randomInt(0, 100))
+print(random.randomInt(0, 100))
+print(random.randomFloat(0.0, 1.0))
+
+random.seed(42)
+print(random.randomInt(0, 1000000))
+
+xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+print(random.choice(xs))
+random.shuffle(xs)
+print(xs)
+
+# A range with one value in it, bounds given the wrong way round (they swap,
+# so both ends stay inclusive), and a zero-width float range.
+random.seed(0)
+print(random.randomInt(5, 5))
+print(random.randomInt(3, 1))
+print(random.randomFloat(2.0, 2.0))
+
+# Nothing to choose from: the module answers with no value.
+print(random.choice([]))

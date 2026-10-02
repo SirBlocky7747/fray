@@ -1,0 +1,85 @@
+# Phase 5: shared-ownership stress. Values stored in two places, reassigned,
+# returned from functions, appended to lists, and indexed — every path must
+# keep the refcounts exactly balanced.
+data = [10, 20, 30]
+
+def first(lst):
+    return lst[0]
+
+# same list reachable from two variables
+alias = data
+alias.append(40)
+print(len(data))   # 4 (alias is the same object)
+
+# returned element is owned by the caller
+h = first(data)
+print(h)           # 10
+
+# element shared between list and variable, then variable overwritten
+shared = data[1]
+hold = [shared, shared]
+shared = 0
+print(hold[0])     # 20
+print(hold[1])     # 20
+
+# nested lists inside tuples inside lists
+inner = [1, 2]
+outer = (inner, inner)
+inner = 0
+print(outer[0][1])  # 2
+
+# repeated append/overwrite churn
+big = []
+for i in range(10000):
+    big.append(i)
+print(big[9999])    # 9999
+while len(big) > 0:
+    big.depend()
+print(len(big))     # 0
+
+# ── a parameter is owned by the callee ──────────────────────────────────────
+# A call hands each argument over: rebinding a parameter drops the value it
+# held, an unused one is still dropped, and the return path drops the last
+# reference. While parameters were borrowed, a rebind (`lo = hi`) stored an
+# owned reference into a slot nothing ever dropped — one box leaked per call,
+# which the ASan memory gate caught.
+data2 = [1, 2, 3]
+
+def clamp(lo, hi):
+    if hi < lo:
+        lo = hi
+        hi = lo
+    return lo
+
+def rewrite(x):
+    x = x + 1
+    x = x * 2
+    return x
+
+def ping(unused):
+    return 0
+
+def echo(x):
+    return x
+
+def but_last(xs):
+    x = xs
+    return len(x)
+
+print(clamp(5, 3))       # 3
+print(rewrite(10))       # 22
+print(ping("dropped"))   # 0
+print(echo("kept"))      # kept
+print(but_last(data2))   # 3
+print(len(data2))        # 3 (the caller's list is untouched)
+# The same contract through a first-class call: the value wrapper binds the
+# arguments from the call list and hands them to the same callee.
+
+def bump(n):
+    n = n + 1
+    return n
+
+f = bump
+print(f(41))             # 42
+
+print("ownership ok")

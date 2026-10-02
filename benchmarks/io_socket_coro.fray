@@ -1,0 +1,74 @@
+# benchmarks/io_socket_coro.fray — the socket half of the Phase 7 I/O claim.
+#
+# NCONN loopback TCP connections, each carrying ROUNDS request/response
+# round-trips. The client side runs on ONE OS thread: NCONN client coroutines
+# park on tcpConnect/readAsync/writeAsync and the event loop resumes them as
+# the worker pool posts, so NCONN conversations are in flight on one thread.
+# The server side is an acceptor coroutine plus one echo handler coroutine per
+# connection, which is exactly the shape an event loop is good at.
+#
+# The port channel is buffered to NCONN and the acceptor posts the port once
+# per connection, so every client finds one waiting; a client calling recv on
+# the loop (rather than from a plain thread) parks its fiber instead of
+# deadlocking against a loop that has not been pumped yet.
+#
+# The runner rewrites the NCONN, ROUNDS and PORTCH constants below.
+
+NCONN = 16
+ROUNDS = 64
+PORTCH = 16
+
+
+async def handler(conn, done):
+    i = 0
+    while i < ROUNDS:
+        msg = readAsync(conn, 64)
+        writeAsync(conn, msg)
+        i += 1
+    closeSocket(conn)
+    send(done, 1)
+
+
+async def acceptor(portCh, done):
+    srv = tcpListen(0)
+    i = 0
+    while i < NCONN:
+        send(portCh, tcpPort(srv))
+        i += 1
+    i = 0
+    while i < NCONN:
+        conn = tcpAccept(srv)
+        handler(conn, done)
+        i += 1
+    closeSocket(srv)
+
+
+async def client(portCh, done):
+    conn = tcpConnect("127.0.0.1", recv(portCh))
+    i = 0
+    while i < ROUNDS:
+        writeAsync(conn, "ping")
+        readAsync(conn, 64)
+        i += 1
+    closeSocket(conn)
+    send(done, 1)
+
+
+def run_all():
+    portCh = channel(PORTCH)
+    done = channel(NCONN + NCONN)
+    acceptor(portCh, done)
+    i = 0
+    while i < NCONN:
+        client(portCh, done)
+        i += 1
+    runUntilComplete()
+    n = 0
+    i = 0
+    while i < NCONN + NCONN:
+        n = n + recv(done)
+        i += 1
+    print(n)
+
+
+run_all()

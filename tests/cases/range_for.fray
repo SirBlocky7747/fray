@@ -1,0 +1,119 @@
+# `for i in range(...)` is a counted loop: no list is built, and a loop
+# variable with a machine slot is never boxed. The bounds, the direction and
+# the step are all observable here, so this pins the shapes the emitter
+# specialises — and the ones it must not.
+
+# The three arities, ascending.
+total = 0
+for i in range(5):
+    total += i
+print(total)          # 0+1+2+3+4 = 10
+
+total = 0
+for i in range(2, 6):
+    total += i
+print(total)          # 2+3+4+5 = 14
+
+# A literal step is counted, not materialised: 0, 3, 6, 9.
+seq = []
+for i in range(0, 12, 3):
+    seq.append(i)
+print(len(seq))   # 4
+print(seq[3])     # 9
+
+# A negative step counts down. This one is a negation in the source, not a
+# literal: the emitter has to read the sign, not the shape.
+down = []
+for i in range(4, 0, -1):
+    down.append(i)
+print(len(down))   # 4
+print(down[0])     # 4
+print(down[3])     # 1
+
+down = []
+for i in range(10, 0, -4):
+    down.append(i)
+print(down)          # [10, 6, 2]
+
+# Zero-trip loops, in both directions.
+n = 0
+for i in range(0):
+    n += 1
+for i in range(3, 3):
+    n += 1
+for i in range(0, 9, -1):
+    n += 1
+print(n)             # 0
+
+# break and continue, and the index they leave behind.
+sum_ = 0
+for i in range(10):
+    if i == 3:
+        continue
+    if i == 6:
+        break
+    sum_ += i
+print(sum_)          # 0+1+2+4+5 = 12
+
+# The body may rebind the loop variable: the next iteration rebinds it from
+# the counter, not from what the body left behind.
+seen = []
+for i in range(4):
+    seen.append(i)
+    i = 99
+print(seen)          # [0, 1, 2, 3]
+
+# Nested counted loops, the inner one restarting for each outer index.
+pairs = []
+for i in range(3):
+    row = []
+    for j in range(2):
+        row.append(i * 10 + j)
+    pairs.append(row)
+print(pairs)         # [[0, 1], [10, 11], [20, 21]]
+
+# A loop variable that is a parameter, and one the body turns into a float.
+def widen(limit, first):
+    acc = 0.0
+    for i in range(limit):
+        acc += i
+    for k in range(first):
+        acc += k
+    return acc
+
+print(widen(4, 2))   # 0+1+2+3 then +0+1 = 7.0
+
+def to_float():
+    x = 0.0
+    for i in range(3):
+        x = i * 1.5
+    return x
+
+print(to_float())    # 3.0
+
+# A step that is not a literal keeps the generic path, and still counts the
+# same way.
+step = 2
+evens = []
+for i in range(0, 7, step):
+    evens.append(i)
+print(evens)         # [0, 2, 4, 6]
+
+# A zero step is a ValueError. It is deliberately not exercised here: the
+# oracle raises it as a host error ("range() arg 3 must not be zero") that a
+# try/except cannot catch, while the runtime raises a catchable one with
+# different wording, so no single .expected file can pin both engines. The
+# counted path never sees it — a literal zero step is not a countable step,
+# so range(0, 5, 0) keeps the generic path and the runtime raises there.
+
+# Bounds are read once, before the first iteration, and in order.
+calls = []
+def note(v):
+    calls.append(v)
+    return v
+
+walked = 0
+for i in range(note(1), note(4)):
+    walked += i
+print(calls)         # [1, 4]
+print(walked)        # 1+2+3 = 6

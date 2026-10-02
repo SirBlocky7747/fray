@@ -1,0 +1,10 @@
+# tests/cases/geom/util.fray — a module inside a package. The package
+# initializer reaches it with a relative import (`from .util import double`),
+# so its name never has to be spelled out by the importer.
+
+def double(x):
+    return x * 2
+
+
+def offset():
+    return 7

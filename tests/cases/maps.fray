@@ -1,0 +1,15 @@
+m = {"name": "fray", "version": 1}
+print(m["name"])
+print(m["version"])
+m["author"] = "team"
+print(m["author"])
+print(len(m))
+print("name" in m)
+print("missing" in m)
+del m["author"]
+print(len(m))
+print("author" in m)
+n = {}
+print(len(n))
+for k in m:
+    print(k)

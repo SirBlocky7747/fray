@@ -1,0 +1,49 @@
+i = 0
+result = ""
+while i < 5:
+    result = "found"
+    i = i + 1
+if result == "found":
+    print("ok1")
+elif result == "":
+    print("bad1")
+else:
+    print("bad1e")
+counter = 0
+j = 0
+while j < 3:
+    counter = counter + 10
+    j = j + 1
+for k in range(3):
+    print("k=" + str(k))
+x = 0
+a = ""
+b = ""
+while x < 2:
+    a = "hello"
+    b = "world"
+    x = x + 1
+if True:
+    if a == "hello":
+        print("ok3")
+    else:
+        print("bad3")
+val = ""
+idx = 0
+while idx < 3:
+    val = val + "x"
+    idx = idx + 1
+print("len=" + str(len(val)))
+tag = ""
+n = 0
+while n < 5:
+    tag = "matched"
+    n = n + 1
+if tag == "nope":
+    print("bad5a")
+elif tag == "wrong":
+    print("bad5b")
+elif tag == "matched":
+    print("ok5")
+else:
+    print("bad5c")

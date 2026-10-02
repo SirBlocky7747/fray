@@ -1,0 +1,59 @@
+# A qualified pattern names the enum its arm belongs to, so two enums can
+# declare a variant with the same name and still be told apart: the oracle
+# lets `case Square.V(q):` match only an instance of Square, and falling
+# through an arm for the wrong enum reaches the right one below it.
+# The qualifier also selects which variant fields the arm's params bind to.
+
+enum Circle:
+    case V(radius)
+    case Tiny
+
+enum Square:
+    case V(side)
+
+a = Circle.V(3)
+b = Square.V(4)
+
+match a:
+    case Square.V(q):
+        print("square " + str(q))
+    case Circle.V(q):
+        print("circle " + str(q))
+
+match b:
+    case Circle.V(q):
+        print("circle " + str(q))
+    case Square.V(q):
+        print("square " + str(q))
+
+# A parameterless variant is qualified the same way.
+t = Circle.Tiny
+match t:
+    case Square.V(q):
+        print("square " + str(q))
+    case Circle.Tiny:
+        print("tiny")
+    case Circle.V(q):
+        print("circle " + str(q))
+
+# A qualifier that names no variant the enum declares never matches.
+match b:
+    case Circle.Tiny:
+        print("tiny")
+    case Square.W(q):
+        print("W " + str(q))
+    case _:
+        print("other")
+
+enum Dot:
+    case Solo(n)
+
+d = Dot.Solo(9)
+match d:
+    case Solo(n):
+        print("solo " + str(n))
+
+d2 = Dot.Solo(11)
+match d2:
+    case Dot.Solo(n):
+        print("dot " + str(n))

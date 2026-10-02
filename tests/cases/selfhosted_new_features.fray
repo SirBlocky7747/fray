@@ -1,0 +1,36 @@
+struct Point:
+    x
+    y
+
+p = Point(10, 20)
+p.x = 99
+print(p.x)
+print(p.y)
+
+enum Color:
+    case Red
+    case Green(r, g, b)
+
+c = Color.Green(255, 0, 128)
+print(c._variant)
+m = match c:
+    case Red:
+        "red"
+    case Green(r, g, b):
+        r + g + b
+    case _:
+        "other"
+print(m)
+
+x = 0
+while x < 10:
+    if x == 3:
+        break
+    x = x + 1
+print(x)
+
+m = {}
+m["key"] = "value"
+print(m["key"])
+del m["key"]
+print("deleted")

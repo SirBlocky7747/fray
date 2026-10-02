@@ -1,0 +1,7 @@
+# Declare libc functions
+extern int strlen(string s)
+
+# Test strlen
+print(strlen("fray"))
+print(strlen("hello world"))
+print(strlen(""))

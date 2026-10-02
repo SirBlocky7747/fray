@@ -1,0 +1,34 @@
+# tests/selfhost/sema_driver.fray — exercises compiler/sema.fray's entry point
+# on a hand-built AST.
+#
+# Like the codegen driver, this is deliberately shallow: it drives analyze()
+# over an empty program and over a program the analyzer must reject, so the
+# compiled module runs its real scope/statement machinery inside a binary.
+# `import sema` is stripped by the gate, so this file is one translation unit
+# with the module.
+
+empty = {}
+empty["type"] = "PROGRAM"
+empty["body"] = []
+errs = analyze(empty, "<driver>")
+print(len(errs))
+
+# `return` outside a function: the analyzer must report it, which exercises
+# error collection and node position reporting.
+bad = {}
+bad["type"] = "PROGRAM"
+bad["body"] = []
+
+ret = {}
+ret["type"] = "RETURN_STMT"
+ret["line"] = 1
+ret["col"] = 0
+val = {}
+val["type"] = "INT_LITERAL"
+val["value"] = 1
+ret["value"] = val
+bad["body"].append(ret)
+
+errs2 = analyze(bad, "<driver>")
+print(len(errs2))
+print(errs2[0])

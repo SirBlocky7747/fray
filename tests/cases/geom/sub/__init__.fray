@@ -1,0 +1,9 @@
+# tests/cases/geom/sub/__init__.fray — a nested package initializer. `..util`
+# climbs from `geom.sub` to `geom`, so a package can build on its parent's
+# siblings as well as its own.
+
+from ..util import double
+
+
+def quadruple(x):
+    return double(double(x))

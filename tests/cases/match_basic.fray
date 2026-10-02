@@ -1,0 +1,33 @@
+enum Color:
+    case Red
+    case Green
+    case Blue
+
+enum Shape:
+    case Circle(radius)
+    case Rectangle(width, height)
+
+x = Color.Red
+match x:
+    case Color.Red:
+        print("red")
+    case Color.Green:
+        print("green")
+    case _:
+        print("other")
+
+y = Shape.Circle(5)
+match y:
+    case Shape.Circle(r):
+        print("circle " + str(r))
+    case _:
+        print("other")
+
+z = Shape.Rectangle(10, 20)
+match z:
+    case Shape.Circle(r):
+        print("circle " + str(r))
+    case Shape.Rectangle(w, h):
+        print("rect " + str(w) + " " + str(h))
+    case _:
+        print("other")

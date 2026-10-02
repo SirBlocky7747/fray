@@ -1,0 +1,6 @@
+# ffi.fray — call C functions directly from fray.
+extern int strlen(string s)
+extern int abs(int x)
+
+print("strlen: " + str(strlen("fray compiles to native code")))
+print("abs:    " + str(abs(-42)))

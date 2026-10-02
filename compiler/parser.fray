@@ -1,0 +1,838 @@
+# compiler/parser.fray — Self-hosted parser for fray
+# Parses a list of tokens into an AST (serialized as dicts).
+#
+# Usage: import lexer, then tokens = lexer.tokenize(src), ast = parse(tokens)
+
+import lexer
+
+# ─── AST Node builder ───
+
+def make_node(ntype, kvs):
+    n = {}
+    n["type"] = ntype
+    i = 0
+    while i < len(kvs):
+        n[kvs[i]] = kvs[i + 1]
+        i = i + 2
+    return n
+
+# ─── Parser state ───
+
+struct ParserState:
+    tokens
+    pos
+
+# ─── Token helpers ───
+
+def peek(ps):
+    if ps.pos < len(ps.tokens):
+        return ps.tokens[ps.pos]
+    return null
+
+def peek_type(ps):
+    t = peek(ps)
+    if t != null:
+        return t.tt
+    return "EOF_TOK"
+
+def advance(ps):
+    if ps.pos >= len(ps.tokens):
+        return null
+    tok = ps.tokens[ps.pos]
+    ps.pos = ps.pos + 1
+    return tok
+
+# ─── Error collection ───
+#
+# Diagnostics are collected rather than printed (the lexer works the same way;
+# see compiler/lexer.fray): the driver displays them and fails the compile.
+# Every parse loop guarantees forward progress, so a syntax error can slow the
+# parser down but can never spin it — that is what used to hang the compiler.
+
+errors = []
+
+def get_errors():
+    return errors
+
+def clear_errors():
+    while len(errors) > 0:
+        errors.depend()
+
+def describe_token(ps):
+    tok = peek(ps)
+    if tok == null:
+        return "end of input"
+    return "token " + tok.tt
+
+def parse_error(ps, msg):
+    tok = peek(ps)
+    line = 0
+    col = 0
+    if tok != null:
+        line = tok.line
+        col = tok.col
+    errors.append(str(line) + ":" + str(col) + ": " + msg)
+
+def expect(ps, tt):
+    tok = peek(ps)
+    if tok == null or tok.tt != tt:
+        got = "EOF"
+        if tok != null:
+            got = tok.tt
+        parse_error(ps, "expected " + tt + " but got " + got)
+        return null
+    return advance(ps)
+
+def try_match(ps, tt):
+    if peek_type(ps) == tt:
+        return advance(ps)
+    return null
+
+def at(ps, tt):
+    return peek_type(ps) == tt
+
+# ─── Skip newlines ───
+
+def skip_newlines(ps):
+    while at(ps, "NEWLINE_TOK"):
+        advance(ps)
+
+# ─── Expression parsing (Pratt parser) ───
+
+PREC_LOW = 0
+PREC_OR = 10
+PREC_AND = 20
+PREC_NOT = 30
+PREC_CMP = 40
+PREC_ADD = 50
+PREC_MUL = 60
+PREC_POWER = 70
+PREC_UNARY = 80
+
+def get_prec(tt):
+    if tt == "OR" or tt == "XOR" or tt == "XNOR":
+        return PREC_OR
+    if tt == "AND":
+        return PREC_AND
+    if tt == "EQ" or tt == "NEQ" or tt == "LT" or tt == "GT" or tt == "LTE" or tt == "GTE":
+        return PREC_CMP
+    if tt == "IN":
+        return PREC_CMP
+    if tt == "PLUS" or tt == "MINUS":
+        return PREC_ADD
+    if tt == "STAR" or tt == "SLASH" or tt == "DOUBLE_SLASH" or tt == "PERCENT":
+        return PREC_MUL
+    if tt == "POWER":
+        return PREC_POWER
+    return PREC_LOW
+
+def is_binop(tt):
+    return get_prec(tt) > PREC_LOW
+
+def parse_expression(ps):
+    return parse_precedence(ps, PREC_LOW)
+
+def parse_precedence(ps, min_prec):
+    left = parse_unary(ps)
+    if left == null:
+        return null
+    while True:
+        pt = peek_type(ps)
+        if not is_binop(pt):
+            break
+        prec = get_prec(pt)
+        if prec < min_prec:
+            break
+        op_tok = advance(ps)
+        right = parse_precedence(ps, prec + 1)
+        if right == null:
+            parse_error(ps, "expected an expression after '" + op_tok.val + "'")
+            return null
+        left = make_node("BINARY_OP", ["op", op_tok.val, "left", left, "right", right, "line", op_tok.line, "col", op_tok.col])
+    return left
+
+def parse_unary(ps):
+    pt = peek_type(ps)
+    if pt == "AWAIT":
+        # await expr — suspends the coroutine until the awaited value
+        # completes. Unary precedence, exactly like the oracle (`await f(x)`
+        # awaits the call, `await x + 1` awaits x and then adds). Whether it
+        # sits inside an async function is checked at codegen time.
+        tok = advance(ps)
+        operand = parse_unary(ps)
+        if operand == null:
+            return null
+        return make_node("AWAIT_EXPR", ["value", operand, "line", tok.line, "col", tok.col])
+    if pt == "NOT":
+        tok = advance(ps)
+        operand = parse_unary(ps)
+        if operand == null:
+            return null
+        return make_node("UNARY_OP", ["op", "not", "operand", operand, "line", tok.line, "col", tok.col])
+    if pt == "MINUS":
+        tok = advance(ps)
+        operand = parse_unary(ps)
+        if operand == null:
+            return null
+        return make_node("UNARY_OP", ["op", "-", "operand", operand, "line", tok.line, "col", tok.col])
+    if pt == "PLUS":
+        advance(ps)
+        return parse_unary(ps)
+    return parse_postfix(ps)
+
+def parse_postfix(ps):
+    node = parse_primary(ps)
+    if node == null:
+        return null
+    while True:
+        pt = peek_type(ps)
+        if pt == "LPAREN":
+            advance(ps)
+            args = []
+            if not at(ps, "RPAREN"):
+                arg = parse_expression(ps)
+                if arg != null:
+                    args.append(arg)
+                while at(ps, "COMMA"):
+                    advance(ps)
+                    arg = parse_expression(ps)
+                    if arg != null:
+                        args.append(arg)
+            expect(ps, "RPAREN")
+            node = make_node("CALL", ["func", node, "args", args, "line", node["line"], "col", node["col"]])
+        elif pt == "DOT":
+            advance(ps)
+            attr = expect(ps, "IDENT")
+            if attr == null:
+                return null
+            node = make_node("MEMBER_ACCESS", ["obj", node, "attr", attr.val, "line", node["line"], "col", node["col"]])
+        elif pt == "LBRACKET":
+            advance(ps)
+            node = parse_index_or_slice(ps, node)
+            if node == null:
+                return null
+        elif pt == "QUESTION":
+            advance(ps)
+            node = make_node("UNARY_OP", ["op", "?", "operand", node, "line", node["line"], "col", node["col"]])
+        else:
+            break
+    return node
+
+def parse_primary(ps):
+    pt = peek_type(ps)
+    tok = peek(ps)
+    if pt == "INT_LIT":
+        advance(ps)
+        return make_node("INT_LITERAL", ["value", tok.val, "line", tok.line, "col", tok.col])
+    if pt == "FLOAT_LIT":
+        advance(ps)
+        return make_node("FLOAT_LITERAL", ["value", tok.val, "line", tok.line, "col", tok.col])
+    if pt == "STRING_LIT":
+        advance(ps)
+        return make_node("STRING_LITERAL", ["value", tok.val, "line", tok.line, "col", tok.col])
+    if pt == "TRUE":
+        advance(ps)
+        return make_node("BOOL_LITERAL", ["value", "True", "line", tok.line, "col", tok.col])
+    if pt == "FALSE":
+        advance(ps)
+        return make_node("BOOL_LITERAL", ["value", "False", "line", tok.line, "col", tok.col])
+    if pt == "NULL":
+        # The none value, not a bool: `isNone(null)` is true, and the oracle
+        # and bootstrap engines both build a none box here. Folding it into
+        # BOOL_LITERAL made every `null` a False at run time.
+        advance(ps)
+        return make_node("NONE_LITERAL", ["line", tok.line, "col", tok.col])
+    if pt == "IDENT":
+        advance(ps)
+        return make_node("IDENTIFIER", ["name", tok.val, "line", tok.line, "col", tok.col])
+    if pt == "LPAREN":
+        return parse_paren_or_tuple(ps)
+    if pt == "LBRACKET":
+        return parse_list_literal(ps)
+    if pt == "LBRACE":
+        return parse_set_or_map_literal(ps)
+    if pt == "MATCH":
+        return parse_match(ps)
+    parse_error(ps, "unexpected " + describe_token(ps) + " (not supported by the self-hosted parser)")
+    return null
+
+# obj[expr] | obj[start:stop] | obj[start:stop:step]
+#
+# A slice becomes INDEX_ACCESS with a SLICE index node, matching the oracle's
+# AST shape. Missing bounds are null, meaning "from the start"/"to the end".
+
+def parse_index_or_slice(ps, obj):
+    start = null
+    stop = null
+    step = null
+    is_slice = False
+    if not at(ps, "COLON"):
+        start = parse_expression(ps)
+        if start == null:
+            return null
+    if at(ps, "COLON"):
+        is_slice = True
+        advance(ps)
+        if not at(ps, "COLON") and not at(ps, "RBRACKET"):
+            stop = parse_expression(ps)
+        if at(ps, "COLON"):
+            advance(ps)
+            if not at(ps, "RBRACKET"):
+                step = parse_expression(ps)
+    expect(ps, "RBRACKET")
+    if is_slice:
+        idx = make_node("SLICE", ["start", start, "stop", stop, "step", step, "line", obj["line"], "col", obj["col"]])
+        return make_node("INDEX_ACCESS", ["obj", obj, "index", idx, "line", obj["line"], "col", obj["col"]])
+    return make_node("INDEX_ACCESS", ["obj", obj, "index", start, "line", obj["line"], "col", obj["col"]])
+
+def parse_paren_or_tuple(ps):
+    advance(ps)
+    skip_newlines(ps)
+    if at(ps, "RPAREN"):
+        advance(ps)
+        return make_node("LIST_LITERAL", ["elements", [], "line", 0, "col", 0])
+    first = parse_expression(ps)
+    if first == null:
+        return null
+    skip_newlines(ps)
+    if at(ps, "COMMA"):
+        elements = [first]
+        while at(ps, "COMMA"):
+            advance(ps)
+            skip_newlines(ps)
+            if at(ps, "RPAREN"):
+                break
+            elem = parse_expression(ps)
+            if elem != null:
+                elements.append(elem)
+        expect(ps, "RPAREN")
+        return make_node("LIST_LITERAL", ["elements", elements, "line", 0, "col", 0])
+    expect(ps, "RPAREN")
+    return first
+
+def parse_list_literal(ps):
+    tok = advance(ps)
+    elements = []
+    if not at(ps, "RBRACKET"):
+        elem = parse_expression(ps)
+        if elem != null:
+            elements.append(elem)
+        while at(ps, "COMMA"):
+            advance(ps)
+            if at(ps, "RBRACKET"):
+                break
+            elem = parse_expression(ps)
+            if elem != null:
+                elements.append(elem)
+    expect(ps, "RBRACKET")
+    return make_node("LIST_LITERAL", ["elements", elements, "line", tok.line, "col", tok.col])
+
+def parse_set_or_map_literal(ps):
+    tok = advance(ps)
+    if at(ps, "RBRACE"):
+        advance(ps)
+        # {} is an empty map (more useful than empty set) — matches the oracle
+        return make_node("MAP_LITERAL", ["keys", [], "values", [], "line", tok.line, "col", tok.col])
+    first = parse_expression(ps)
+    if first == null:
+        return null
+    skip_newlines(ps)
+    if at(ps, "COLON"):
+        advance(ps)
+        val = parse_expression(ps)
+        keys = [first]
+        values = [val]
+        while at(ps, "COMMA"):
+            advance(ps)
+            skip_newlines(ps)
+            if at(ps, "RBRACE"):
+                break
+            k = parse_expression(ps)
+            expect(ps, "COLON")
+            v = parse_expression(ps)
+            if k != null and v != null:
+                keys.append(k)
+                values.append(v)
+        expect(ps, "RBRACE")
+        return make_node("MAP_LITERAL", ["keys", keys, "values", values, "line", tok.line, "col", tok.col])
+    else:
+        elements = [first]
+        while at(ps, "COMMA"):
+            advance(ps)
+            if at(ps, "RBRACE"):
+                break
+            elem = parse_expression(ps)
+            if elem != null:
+                elements.append(elem)
+        expect(ps, "RBRACE")
+        return make_node("SET_LITERAL", ["elements", elements, "line", tok.line, "col", tok.col])
+
+# ─── Statement parsing ───
+
+def parse_statement(ps):
+    pt = peek_type(ps)
+    if pt == "NEWLINE_TOK":
+        advance(ps)
+        return null
+    if pt == "DEF":
+        return parse_function_def(ps, False)
+    if pt == "ASYNC":
+        # `async def name(...)` — the keyword precedes `def`, as in the oracle's
+        # parser. (This used to read `def async name(...)`, which no program
+        # ever writes, so every async function failed with "unexpected token
+        # ASYNC".)
+        advance(ps)
+        if not at(ps, "DEF"):
+            parse_error(ps, "expected 'def' after 'async'")
+            return null
+        return parse_function_def(ps, True)
+    if pt == "IF":
+        return parse_if(ps)
+    if pt == "FOR":
+        return parse_for(ps)
+    if pt == "WHILE":
+        return parse_while(ps)
+    if pt == "RETURN":
+        return parse_return(ps)
+    if pt == "CONST":
+        return parse_const(ps)
+    if pt == "IMPORT" or pt == "FROM":
+        return parse_import(ps)
+    if pt == "EXTERN":
+        return parse_extern(ps)
+    if pt == "STRUCT":
+        return parse_struct_def(ps)
+    if pt == "ENUM":
+        return parse_enum_def(ps)
+    if pt == "MATCH":
+        return parse_match(ps)
+    if pt == "DEL":
+        return parse_del(ps)
+    if pt == "BREAK":
+        tok = advance(ps)
+        skip_newlines(ps)
+        return make_node("BREAK_STMT", ["line", tok.line, "col", tok.col])
+    if pt == "CONTINUE":
+        tok = advance(ps)
+        skip_newlines(ps)
+        return make_node("CONTINUE_STMT", ["line", tok.line, "col", tok.col])
+    if pt == "TRY":
+        return parse_try(ps)
+    return parse_expr_or_assignment(ps)
+
+def parse_block(ps):
+    skip_newlines(ps)
+    if not at(ps, "INDENT_TOK"):
+        return []
+    advance(ps)
+    stmts = []
+    skip_newlines(ps)
+    while not at(ps, "DEDENT_TOK") and not at(ps, "EOF_TOK"):
+        stmts = parse_statement_guarded(ps, stmts)
+        skip_newlines(ps)
+    try_match(ps, "DEDENT_TOK")
+    return stmts
+
+# Parse one statement, guaranteeing forward progress.
+#
+# If a statement parse consumes nothing, the cursor would stay put and every
+# enclosing loop would spin forever (that was the struct-field hang). Report
+# the offending token unless a deeper error already explained it, then skip a
+# single token so the parser always advances.
+
+def parse_statement_guarded(ps, stmts):
+    start = ps.pos
+    errors_before = len(errors)
+    stmt = parse_statement(ps)
+    if stmt != null:
+        stmts.append(stmt)
+    if ps.pos == start:
+        if len(errors) == errors_before:
+            parse_error(ps, "unexpected " + describe_token(ps) + " (not supported by the self-hosted parser)")
+        advance(ps)
+    return stmts
+
+def parse_function_def(ps, is_async):
+    tok = advance(ps)
+    if at(ps, "ASYNC"):
+        # Tolerate the keyword on either side of `def`: the bootstrap parser
+        # reads `async def`, and accepting both costs nothing.
+        advance(ps)
+        is_async = True
+    name_tok = expect(ps, "IDENT")
+    if name_tok == null:
+        return null
+    expect(ps, "LPAREN")
+    params = []
+    if not at(ps, "RPAREN"):
+        p = expect(ps, "IDENT")
+        if p != null:
+            params.append(p.val)
+        while at(ps, "COMMA"):
+            advance(ps)
+            p = expect(ps, "IDENT")
+            if p != null:
+                params.append(p.val)
+    expect(ps, "RPAREN")
+    expect(ps, "COLON")
+    body = parse_block(ps)
+    return make_node("FUNCTION_DEF", ["name", name_tok.val, "params", params, "body", body, "is_async", is_async, "line", tok.line, "col", tok.col])
+
+def parse_if(ps):
+    tok = advance(ps)
+    cond = parse_expression(ps)
+    expect(ps, "COLON")
+    body = parse_block(ps)
+    elif_branches = []
+    else_body = null
+    skip_newlines(ps)
+    while at(ps, "ELIF"):
+        advance(ps)
+        elif_cond = parse_expression(ps)
+        expect(ps, "COLON")
+        elif_body = parse_block(ps)
+        elif_branches.append({"cond": elif_cond, "body": elif_body})
+        skip_newlines(ps)
+    if at(ps, "ELSE"):
+        advance(ps)
+        expect(ps, "COLON")
+        else_body = parse_block(ps)
+    return make_node("IF_STMT", ["cond", cond, "body", body, "elif_branches", elif_branches, "else_body", else_body, "line", tok.line, "col", tok.col])
+
+def parse_for(ps):
+    tok = advance(ps)
+    var_name = expect(ps, "IDENT")
+    expect(ps, "IN")
+    iterable = parse_expression(ps)
+    expect(ps, "COLON")
+    body = parse_block(ps)
+    if var_name == null:
+        return null
+    return make_node("FOR_LOOP", ["var", var_name.val, "iterable", iterable, "body", body, "line", tok.line, "col", tok.col])
+
+def parse_while(ps):
+    tok = advance(ps)
+    cond = parse_expression(ps)
+    expect(ps, "COLON")
+    body = parse_block(ps)
+    return make_node("WHILE_LOOP", ["cond", cond, "body", body, "line", tok.line, "col", tok.col])
+
+def parse_return(ps):
+    tok = advance(ps)
+    value = null
+    if not at(ps, "NEWLINE_TOK") and not at(ps, "EOF_TOK") and not at(ps, "DEDENT_TOK"):
+        value = parse_expression(ps)
+    skip_newlines(ps)
+    return make_node("RETURN_STMT", ["value", value, "line", tok.line, "col", tok.col])
+
+def parse_const(ps):
+    tok = advance(ps)
+    name = expect(ps, "IDENT")
+    expect(ps, "ASSIGN")
+    value = parse_expression(ps)
+    skip_newlines(ps)
+    if name == null:
+        return null
+    return make_node("CONST_STMT", ["name", name.val, "value", value, "line", tok.line, "col", tok.col])
+
+def parse_del(ps):
+    tok = advance(ps)
+    target = parse_expression(ps)
+    skip_newlines(ps)
+    return make_node("DEL_STMT", ["target", target, "line", tok.line, "col", tok.col])
+
+def parse_dotted_name(ps):
+    # A module path: `a`, `a.b`, or deeper — the segments joined with dots.
+    # This is the one place in the grammar a dot is not member access, so the
+    # name is assembled from IDENT tokens rather than parsed as an expression.
+    first = expect(ps, "IDENT")
+    if first == null:
+        return ""
+    name = first.val
+    while at(ps, "DOT"):
+        advance(ps)
+        part = expect(ps, "IDENT")
+        if part == null:
+            return name
+        name = name + "." + part.val
+    return name
+
+def parse_import_dots(ps):
+    # Leading dots in a module path are the relative level: `.sibling` is one
+    # dot (the current package), `..pkg.util` is two (the parent package).
+    # They are not member access, so they are counted here.
+    level = 0
+    while at(ps, "DOT"):
+        advance(ps)
+        level = level + 1
+    return level
+
+def parse_import_path(ps):
+    # The dotted name after the dots. It may be empty: `from . import util`
+    # names a submodule, so only the dots appear before `import`.
+    if not at(ps, "IDENT"):
+        return ""
+    return parse_dotted_name(ps)
+
+def parse_import(ps):
+    tok = peek(ps)
+    if at(ps, "FROM"):
+        advance(ps)
+        level = parse_import_dots(ps)
+        module = parse_import_path(ps)
+        expect(ps, "IMPORT")
+        names = []
+        n = expect(ps, "IDENT")
+        if n != null:
+            names.append(n.val)
+        while at(ps, "COMMA"):
+            advance(ps)
+            n = expect(ps, "IDENT")
+            if n != null:
+                names.append(n.val)
+        skip_newlines(ps)
+        if module == "" and level == 0:
+            return null
+        return make_node("IMPORT_STMT", ["module", module, "names", names, "from_import", True, "level", level, "line", tok.line, "col", tok.col])
+    else:
+        advance(ps)
+        level = parse_import_dots(ps)
+        module = parse_import_path(ps)
+        skip_newlines(ps)
+        if module == "" and level == 0:
+            return null
+        return make_node("IMPORT_STMT", ["module", module, "names", [], "from_import", False, "level", level, "line", tok.line, "col", tok.col])
+
+def parse_extern(ps):
+    tok = advance(ps)
+    ret_type = expect(ps, "IDENT")
+    name = expect(ps, "IDENT")
+    expect(ps, "LPAREN")
+    param_types = []
+    param_names = []
+    if not at(ps, "RPAREN"):
+        pt = expect(ps, "IDENT")
+        pn = expect(ps, "IDENT")
+        if pt != null and pn != null:
+            param_types.append(pt.val)
+            param_names.append(pn.val)
+        while at(ps, "COMMA"):
+            advance(ps)
+            pt = expect(ps, "IDENT")
+            pn = expect(ps, "IDENT")
+            if pt != null and pn != null:
+                param_types.append(pt.val)
+                param_names.append(pn.val)
+    expect(ps, "RPAREN")
+    skip_newlines(ps)
+    if name == null or ret_type == null:
+        return null
+    return make_node("EXTERN_DECL", ["name", name.val, "return_type", ret_type.val, "param_types", param_types, "param_names", param_names, "line", tok.line, "col", tok.col])
+
+# struct Name:\n    field\n    field = default
+#
+# Field declarations are names, with an optional default expression. The
+# default is parsed and recorded but is not applied yet: this compiler builds
+# a field as None unless a positional argument supplies it, whereas the spec
+# and the oracle fall back to the declared default. sema reports a
+# constructor that would need one, so the difference is never silent.
+
+def parse_struct_def(ps):
+    tok = advance(ps)
+    name = expect(ps, "IDENT")
+    expect(ps, "COLON")
+    skip_newlines(ps)
+    if not at(ps, "INDENT_TOK"):
+        parse_error(ps, "expected an indented block of struct fields")
+        return null
+    advance(ps)
+    fields = []
+    field_defaults = []
+    skip_newlines(ps)
+    while not at(ps, "DEDENT_TOK") and not at(ps, "EOF_TOK"):
+        start = ps.pos
+        fname = expect(ps, "IDENT")
+        if fname != null:
+            fields.append(fname.val)
+            default = null
+            if at(ps, "ASSIGN"):
+                advance(ps)
+                default = parse_expression(ps)
+                if default == null:
+                    parse_error(ps, "expected a default value after '='")
+            field_defaults.append(default)
+        if ps.pos == start:
+            # Nothing consumed: skip the offending token so this loop, like
+            # every other parse loop, is guaranteed to terminate.
+            parse_error(ps, "unexpected " + describe_token(ps) + " in struct body (expected a field name)")
+            advance(ps)
+        skip_newlines(ps)
+    try_match(ps, "DEDENT_TOK")
+    if name == null:
+        return null
+    return make_node("STRUCT_DEF", ["name", name.val, "fields", fields, "field_defaults", field_defaults, "line", tok.line, "col", tok.col])
+
+def parse_enum_def(ps):
+    tok = advance(ps)
+    name = expect(ps, "IDENT")
+    expect(ps, "COLON")
+    skip_newlines(ps)
+    if not at(ps, "INDENT_TOK"):
+        parse_error(ps, "expected an indented block of enum cases")
+        return null
+    advance(ps)
+    cases = []
+    skip_newlines(ps)
+    while not at(ps, "DEDENT_TOK") and not at(ps, "EOF_TOK"):
+        if not at(ps, "CASE"):
+            # Consume a token before looping again, so a malformed body cannot
+            # spin the parser.
+            parse_error(ps, "expected 'case' in enum body but got " + describe_token(ps))
+            advance(ps)
+            skip_newlines(ps)
+        else:
+            advance(ps)
+            case_name = expect(ps, "IDENT")
+            params = []
+            if at(ps, "LPAREN"):
+                advance(ps)
+                if not at(ps, "RPAREN"):
+                    p = expect(ps, "IDENT")
+                    if p != null:
+                        params.append(p.val)
+                    while at(ps, "COMMA"):
+                        advance(ps)
+                        p = expect(ps, "IDENT")
+                        if p != null:
+                            params.append(p.val)
+                expect(ps, "RPAREN")
+            cname = ""
+            if case_name != null:
+                cname = case_name.val
+            cases.append({"name": cname, "params": params})
+            skip_newlines(ps)
+    try_match(ps, "DEDENT_TOK")
+    if name == null:
+        return null
+    return make_node("ENUM_DEF", ["name", name.val, "cases", cases, "line", tok.line, "col", tok.col])
+
+def parse_match(ps):
+    tok = advance(ps)
+    subject = parse_expression(ps)
+    expect(ps, "COLON")
+    skip_newlines(ps)
+    if not at(ps, "INDENT_TOK"):
+        parse_error(ps, "expected an indented block of match arms")
+        return null
+    advance(ps)
+    arms = []
+    skip_newlines(ps)
+    while not at(ps, "DEDENT_TOK") and not at(ps, "EOF_TOK"):
+        if not at(ps, "CASE"):
+            parse_error(ps, "expected 'case' in match body but got " + describe_token(ps))
+            advance(ps)
+            skip_newlines(ps)
+        else:
+            advance(ps)
+            enum_name = ""
+            variant_name = ""
+            params = []
+            if at(ps, "IDENT") and peek(ps).val == "_":
+                advance(ps)
+                variant_name = "_"
+            elif not at(ps, "IDENT"):
+                # Patterns are enum variants or '_' only (the oracle rejects the
+                # rest as well). Skip to the end of the pattern so the arm loop
+                # always makes progress.
+                parse_error(ps, "expected an enum variant or '_' in match arm but got " + describe_token(ps))
+                while not at(ps, "COLON") and not at(ps, "NEWLINE_TOK") and not at(ps, "EOF_TOK"):
+                    advance(ps)
+            else:
+                vname = expect(ps, "IDENT")
+                variant_name = vname.val
+                if at(ps, "DOT"):
+                    advance(ps)
+                    enum_name = variant_name
+                    vname2 = expect(ps, "IDENT")
+                    if vname2 != null:
+                        variant_name = vname2.val
+                    else:
+                        variant_name = ""
+                if at(ps, "LPAREN"):
+                    advance(ps)
+                    if not at(ps, "RPAREN"):
+                        p = expect(ps, "IDENT")
+                        if p != null:
+                            params.append(p.val)
+                        while at(ps, "COMMA"):
+                            advance(ps)
+                            p = expect(ps, "IDENT")
+                            if p != null:
+                                params.append(p.val)
+                    expect(ps, "RPAREN")
+            expect(ps, "COLON")
+            body = parse_block(ps)
+            arms.append({"enum_name": enum_name, "variant_name": variant_name, "params": params, "body": body})
+            skip_newlines(ps)
+    try_match(ps, "DEDENT_TOK")
+    return make_node("MATCH_EXPR", ["subject", subject, "arms", arms, "line", tok.line, "col", tok.col])
+
+def parse_try(ps):
+    tok = advance(ps)
+    expect(ps, "COLON")
+    body = parse_block(ps)
+    except_clauses = []
+    finally_body = null
+    skip_newlines(ps)
+    while at(ps, "EXCEPT"):
+        advance(ps)
+        exc_type = null
+        exc_name = null
+        if not at(ps, "COLON"):
+            exc_type = expect(ps, "IDENT")
+            if at(ps, "AS"):
+                advance(ps)
+                exc_name = expect(ps, "IDENT")
+        expect(ps, "COLON")
+        exc_body = parse_block(ps)
+        et = null
+        if exc_type != null:
+            et = exc_type.val
+        en = null
+        if exc_name != null:
+            en = exc_name.val
+        except_clauses.append({"type": et, "name": en, "body": exc_body})
+        skip_newlines(ps)
+    if at(ps, "FINALLY"):
+        advance(ps)
+        expect(ps, "COLON")
+        finally_body = parse_block(ps)
+    return make_node("TRY_STMT", ["body", body, "except_clauses", except_clauses, "finally_body", finally_body, "line", tok.line, "col", tok.col])
+
+def parse_expr_or_assignment(ps):
+    expr = parse_expression(ps)
+    if expr == null:
+        skip_newlines(ps)
+        return null
+    pt = peek_type(ps)
+    if pt == "ASSIGN" or pt == "PLUS_ASSIGN" or pt == "MINUS_ASSIGN" or pt == "STAR_ASSIGN" or pt == "SLASH_ASSIGN" or pt == "PERCENT_ASSIGN" or pt == "POWER_ASSIGN" or pt == "DOUBLE_SLASH_ASSIGN":
+        op_tok = advance(ps)
+        value = parse_expression(ps)
+        skip_newlines(ps)
+        if op_tok.val == "=":
+            return make_node("ASSIGNMENT", ["target", expr, "op", "=", "value", value, "line", op_tok.line, "col", op_tok.col])
+        return make_node("AUG_ASSIGNMENT", ["target", expr, "op", op_tok.val, "value", value, "line", op_tok.line, "col", op_tok.col])
+    skip_newlines(ps)
+    return make_node("EXPR_STMT", ["expr", expr, "line", expr["line"], "col", expr["col"]])
+
+# ─── Main parse function ───
+
+def parse(tokens):
+    clear_errors()
+    ps = ParserState(tokens, 0)
+    skip_newlines(ps)
+    stmts = []
+    while not at(ps, "EOF_TOK"):
+        stmts = parse_statement_guarded(ps, stmts)
+        skip_newlines(ps)
+    return make_node("PROGRAM", ["body", stmts])

@@ -1,0 +1,22 @@
+# booleans and logic
+x = True
+y = False
+
+print(x and y)   # False
+print(x or y)    # True
+print(x xor y)   # True
+print(not x)     # False
+print(x xnor y)  # False
+
+# comparison
+a = 1
+print(a == 1)   # True
+print(a != 1)   # False
+print(a > 0)    # True
+print(a < 0)    # False
+print(a >= 1)   # True
+print(a <= 0)   # False
+
+# const
+const z = 42
+print(z)  # 42

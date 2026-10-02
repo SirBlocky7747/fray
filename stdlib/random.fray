@@ -1,0 +1,62 @@
+# stdlib/random.fray — the `random` module.
+#
+# A 31-bit linear congruential generator, in fray itself:
+#
+#     x = (1103515245 * x + 12345) % 2^31
+#
+# the recurrence (and the constants) behind C's rand(). Every product stays
+# inside a 64-bit int — 1103515245 * 2^31 is about 2.4e18 — so the oracle's
+# unbounded integers and the compiler's boxes agree digit for digit. That is
+# what lets a program using this module be diffed between the two engines, and
+# tests/cases/random_module.fray pins the sequence to prove it.
+#
+# Entropy is not part of the runtime yet: there is no clock or OS-random
+# builtin, so the default seed is a constant and a run is reproducible unless
+# it calls seed(n). Seeding is the caller's business until the runtime grows a
+# source of it.
+#
+# The state is a one-element list rather than a plain module global: a function
+# cannot rebind a global, but it can mutate the cell the global holds — the
+# same shape compiler/link.fray uses for its error list.
+
+_state = [123456789]
+
+def _step():
+    _state[0] = (1103515245 * _state[0] + 12345) % 2147483648
+    return _state[0]
+
+def seed(n):
+    _state[0] = abs(int(n)) % 2147483648
+
+def randomInt(lo, hi):
+    # Inclusive at both ends, so randomInt(0, 1) is a coin flip. Bounds given
+    # the wrong way round are swapped by recursing instead of by assigning to
+    # the parameters: rebinding a parameter hands the frame a reference it
+    # never drops, so the swapped form leaks one box per call (the compiler
+    # bug plan.md records — `def f(x): x = 1; return x` leaks the same way).
+    if hi < lo:
+        return randomInt(hi, lo)
+    return lo + _step() % (hi - lo + 1)
+
+def randomFloat(lo, hi):
+    # The millionth of the generator's range below hi: [lo, hi).
+    return lo + (_step() % 1000000) / 1000000.0 * (hi - lo)
+
+def choice(xs):
+    # An empty list has nothing to choose: the function answers with no value
+    # (the layout's `None` literal is still PROPOSED — §25 — so a bare return
+    # is what "no value" is spelled with today).
+    if len(xs) == 0:
+        return
+    return xs[randomInt(0, len(xs) - 1)]
+
+def shuffle(xs):
+    # Fisher-Yates, in place. Like `depend`, it answers with nothing: the
+    # caller's list is what changed.
+    i = len(xs) - 1
+    while i > 0:
+        j = randomInt(0, i)
+        t = xs[i]
+        xs[i] = xs[j]
+        xs[j] = t
+        i = i - 1

@@ -1,0 +1,19 @@
+# statistics
+x = [10, 20, 15, 12]
+
+# mean
+print(mean(x))  # 14.25
+
+# median (sorts values)
+print(med(x))  # 13.5
+
+# mode
+print(mode(x))  # 10 (or any value if all unique)
+
+# mid (positional middle)
+print(mid(x))  # 15
+
+# min, max, sum
+print(min(3, 1, 2))  # 1
+print(max(3, 1, 2))  # 3
+print(sum([1, 2, 3]))  # 6

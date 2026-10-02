@@ -1,0 +1,16 @@
+4 4
+x 1 True [1, 2]
+a b
+only
+lead a b c
+
+after
+1 2
+None
+1.5 s True
+[1, 2] [3, 4]
+a b c
+[a, b, c]
+i = 0 sq = 0
+i = 1 sq = 1
+i = 2 sq = 4

@@ -1,0 +1,19 @@
+# fibonacci.fray — recursion next to iteration.
+def fib_rec(n):
+    if n <= 1:
+        return n
+    return fib_rec(n - 1) + fib_rec(n - 2)
+
+def fib_iter(n):
+    a = 0
+    b = 1
+    for i in range(n):
+        tmp = b
+        b = a + b
+        a = tmp
+    return a
+
+for i in range(10):
+    print(fib_rec(i))
+
+print(fib_iter(40))

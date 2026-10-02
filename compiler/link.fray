@@ -1,0 +1,596 @@
+# compiler/link.fray — import resolution and namespaces for the self-hosted compiler
+#
+# A fray program is a set of modules linked into one compilation. This pass
+# turns a parsed main program plus a catalog of module sources into a single
+# program the codegen can emit:
+#
+#   * every `import X` is resolved against the catalog (recursively — an
+#     imported module may import others), and each module is parsed once;
+#   * a top-level name that more than one module defines is renamed to
+#     `<module>_<name>`, so the modules' symbols stop sharing a name. A name
+#     only one module defines keeps its name: it is already unambiguous, and a
+#     reference to it can only mean that module. This is why `lexer.tokenize`
+#     and `parser.parse` still read as `tokenize`/`parse` after linking.
+#   * references are rewritten to match: unqualified names to the defining
+#     module's symbol, `module.name` to that module's symbol, and
+#     `from module import name` to the imported symbol. Only identifier
+#     *uses* are touched — struct fields, enum variants, dict keys and string
+#     literals are plain strings in the AST and are never renamed. A
+#     qualified match pattern is the one exception: its enum name
+#     (`case Shape.Circle(r):`) is a use of the enum, so it moves with the
+#     enum, while the variant name after the dot is runtime data.
+#   * `import` statements are dropped; the merged program has none.
+#
+# The rename is an ordinary identifier substitution applied consistently to
+# every occurrence in a module (definitions, call targets, parameters, loop
+# variables, bindings), so it preserves shadowing: a local named `errors` and
+# a module global `errors` both become `module_errors` and keep their relative
+# scopes. What it deliberately does *not* rename is anything in string position
+# (a struct field name, a match variant, a dict key), because those are
+# runtime data, not names.
+#
+# The catalog is a map from module name to source text; the host that runs the
+# compiler supplies it (tools/frayc_selfhosted.py reads the files — the
+# self-hosted compiler has no file I/O of its own). tools/check_frontend.py
+# --single-unit and the golden suite exercise this end to end.
+
+import lexer
+import parser
+
+errors = []
+
+def get_errors():
+    return errors
+
+def clear_errors():
+    while len(errors) > 0:
+        errors.depend()
+
+def link_error(msg):
+    errors.append(msg)
+
+# ─── Top-level definitions of a module ───
+
+# The names a module contributes to the shared link: its functions, types and
+# module-level variables. A module-level assignment is a global (see codegen's
+# compile_ir); a name first assigned inside a branch or loop is a local of the
+# enclosing frame, so it is not a top-level definition.
+
+def collect_defs(program):
+    names = {}
+    body = program["body"]
+    i = 0
+    while i < len(body):
+        s = body[i]
+        k = s["type"]
+        if k == "FUNCTION_DEF" or k == "STRUCT_DEF" or k == "ENUM_DEF" or k == "EXTERN_DECL":
+            names[s["name"]] = True
+        elif k == "CONST_STMT":
+            names[s["name"]] = True
+        elif k == "ASSIGNMENT":
+            target = s["target"]
+            if target != null and target["type"] == "IDENTIFIER":
+                names[target["name"]] = True
+        i = i + 1
+    return names
+
+def imports_of(program):
+    out = []
+    body = program["body"]
+    i = 0
+    while i < len(body):
+        if body[i]["type"] == "IMPORT_STMT":
+            out.append(body[i])
+        i = i + 1
+    return out
+
+# ─── Relative module paths ───
+
+# Leading dots make an import relative to the importing module's package. The
+# package of a module is the module itself when it is a package initializer
+# (`pkg/__init__.fray`), and the directory holding it otherwise — so `.util`
+# inside `pkg.util`'s sibling `pkg/__init__.fray` is `pkg.util`, and inside
+# `pkg/sub.fray` it is `pkg.util` too, while `..util` climbs one level.
+
+# Index of the last `.` in `name`, or -1.
+
+def last_dot(name):
+    out = -1
+    i = 0
+    while i < len(name):
+        if name[i] == ".":
+            out = i
+        i = i + 1
+    return out
+
+def prefix_upto(name, stop):
+    out = ""
+    i = 0
+    while i < stop:
+        out = out + name[i]
+        i = i + 1
+    return out
+
+def owner_package(owner, packages):
+    if owner == MAIN:
+        return ""
+    if owner in packages:
+        return owner
+    d = last_dot(owner)
+    if d < 0:
+        return ""
+    return prefix_upto(owner, d)
+
+# The absolute module name a (possibly relative) import refers to, or "" when
+# there is no package to resolve against — a relative import in the main
+# program, or one that climbs past the top level.
+
+def resolve_relative(module, level, owner, packages):
+    if level == 0:
+        return module
+    pkg = owner_package(owner, packages)
+    if pkg == "":
+        return ""
+    up = level - 1
+    i = 0
+    while i < up:
+        if pkg == "":
+            return ""
+        d = last_dot(pkg)
+        if d < 0:
+            pkg = ""
+        else:
+            pkg = prefix_upto(pkg, d)
+        i = i + 1
+    if module == "":
+        if pkg == "":
+            return ""
+        return pkg
+    if pkg == "":
+        return module
+    return pkg + "." + module
+
+# ─── Resolve the import graph ───
+
+# Depth-first: a module's own imports are resolved before it is appended to
+# `order`, so the merged program lists dependencies before dependents and a
+# module imported by several others is parsed and linked exactly once. A name
+# already in `modules` is left alone, which is also what stops an import cycle.
+
+def load_module(name, catalog, packages, modules, order):
+    if name in modules:
+        return
+    if not (name in catalog):
+        link_error("cannot resolve import '" + name + "' (no such module)")
+        return
+    src = catalog[name]
+    tokens = lexer.tokenize(src)
+    lerrs = lexer.get_errors()
+    j = 0
+    while j < len(lerrs):
+        link_error("module '" + name + "': " + lerrs[j])
+        j = j + 1
+    mod = parser.parse(tokens)
+    perrs = parser.get_errors()
+    j = 0
+    while j < len(perrs):
+        link_error("module '" + name + "': " + perrs[j])
+        j = j + 1
+    modules[name] = mod
+    load_modules(mod, catalog, packages, modules, order, name)
+    order.append(name)
+
+# Each import's path is rewritten to its absolute module name in place, so
+# everything after this pass — the namespace rewrite and the qualified
+# reference resolver — sees one spelling of every module. A from-import also
+# pulls in a submodule named by one of its names (`from . import util`), which
+# is a module the package binds locally rather than a name it re-exports.
+
+def load_modules(program, catalog, packages, modules, order, owner):
+    imps = imports_of(program)
+    i = 0
+    while i < len(imps):
+        st = imps[i]
+        name = resolve_relative(st["module"], st["level"], owner, packages)
+        if name == "":
+            link_error("cannot resolve relative import in module '" + owner + "'")
+        else:
+            st["module"] = name
+            load_module(name, catalog, packages, modules, order)
+            if st["from_import"]:
+                names = st["names"]
+                j = 0
+                while j < len(names):
+                    sub = name + "." + names[j]
+                    if (sub in catalog) and not (sub in modules):
+                        load_module(sub, catalog, packages, modules, order)
+                    j = j + 1
+        i = i + 1
+
+# ─── Rewriting ───
+
+def make_ident(name, src):
+    n = {}
+    n["type"] = "IDENTIFIER"
+    n["name"] = name
+    n["line"] = src["line"]
+    n["col"] = src["col"]
+    return n
+
+def rename_of(renames, name):
+    if name in renames:
+        return renames[name]
+    return name
+
+def module_prefix(name):
+    # `a.b` -> `a_b`, so a dotted module's mangled symbols are plain
+    # identifiers. The tree separator is not part of an identifier.
+    out = ""
+    i = 0
+    while i < len(name):
+        if name[i] == ".":
+            out = out + "_"
+        else:
+            out = out + name[i]
+        i = i + 1
+    return out
+
+def rename_names(renames, names):
+    i = 0
+    while i < len(names):
+        names[i] = rename_of(renames, names[i])
+        i = i + 1
+
+# Expressions. `node == null` covers the optional slots a statement carries
+# (a bare `return`, a struct field with no default).
+
+# Flatten `a.b.c` into ["a", "b", "c"] when every step is plain member access;
+# null for anything else (a call result, an index).
+
+def member_chain(node):
+    if node == null:
+        return null
+    k = node["type"]
+    if k == "IDENTIFIER":
+        out = []
+        out.append(node["name"])
+        return out
+    if k == "MEMBER_ACCESS":
+        base = member_chain(node["obj"])
+        if base == null:
+            return null
+        base.append(node["attr"])
+        return base
+    return null
+
+def join_names(parts, stop):
+    out = ""
+    i = 0
+    while i < stop:
+        if i > 0:
+            out = out + "."
+        out = out + parts[i]
+        i = i + 1
+    return out
+
+# `a.b.f` is a namespace path, not a value. Try the longest prefix this
+# module bound to a module first (so `a.b.f` prefers module `a.b` over `a`),
+# resolve the next segment in that module, and re-attach any further
+# attributes so `a.b.Color.Red` becomes the (renamed) enum name with `.Red`
+# still on it. Returns null when no prefix matches, so an ordinary chain like
+# `Color.Red` or `point.x` falls through to the normal rewrite.
+
+def resolve_qualified(node, parts, ctx):
+    symbols = ctx["symbols"]
+    mods = ctx["mods"]
+    p = len(parts) - 1
+    while p >= 1:
+        local = join_names(parts, p)
+        if local in mods:
+            modname = mods[local]
+            if modname in symbols and parts[p] in symbols[modname]:
+                result = make_ident(symbols[modname][parts[p]], node)
+                j = p + 1
+                while j < len(parts):
+                    wrap = {}
+                    wrap["type"] = "MEMBER_ACCESS"
+                    wrap["obj"] = result
+                    wrap["attr"] = parts[j]
+                    wrap["line"] = node["line"]
+                    wrap["col"] = node["col"]
+                    result = wrap
+                    j = j + 1
+                return result
+        p = p - 1
+    return null
+
+def rw_expr(node, ctx):
+    if node == null:
+        return node
+    k = node["type"]
+    if k == "IDENTIFIER":
+        name = node["name"]
+        if name in ctx["aliases"]:
+            node["name"] = ctx["aliases"][name]
+        elif name in ctx["renames"]:
+            node["name"] = ctx["renames"][name]
+        return node
+    if k == "MEMBER_ACCESS":
+        # `module.name`, and `a.b.name` for a dotted module: the module path is
+        # a namespace, not a value. A chain that matches no imported module is
+        # an ordinary attribute access and falls through to the rewrite below.
+        parts = member_chain(node)
+        if parts != null:
+            resolved = resolve_qualified(node, parts, ctx)
+            if resolved != null:
+                return resolved
+        node["obj"] = rw_expr(node["obj"], ctx)
+        return node
+    if k == "CALL":
+        node["func"] = rw_expr(node["func"], ctx)
+        rw_list(node["args"], ctx)
+        return node
+    if k == "BINARY_OP":
+        node["left"] = rw_expr(node["left"], ctx)
+        node["right"] = rw_expr(node["right"], ctx)
+        return node
+    if k == "UNARY_OP":
+        node["operand"] = rw_expr(node["operand"], ctx)
+        return node
+    if k == "INDEX_ACCESS":
+        node["obj"] = rw_expr(node["obj"], ctx)
+        node["index"] = rw_expr(node["index"], ctx)
+        return node
+    if k == "SLICE":
+        if node["start"] != null:
+            node["start"] = rw_expr(node["start"], ctx)
+        if node["stop"] != null:
+            node["stop"] = rw_expr(node["stop"], ctx)
+        if node["step"] != null:
+            node["step"] = rw_expr(node["step"], ctx)
+        return node
+    if k == "LIST_LITERAL" or k == "SET_LITERAL":
+        rw_list(node["elements"], ctx)
+        return node
+    if k == "MAP_LITERAL":
+        rw_list(node["keys"], ctx)
+        rw_list(node["values"], ctx)
+        return node
+    return node
+
+def rw_list(nodes, ctx):
+    i = 0
+    while i < len(nodes):
+        nodes[i] = rw_expr(nodes[i], ctx)
+        i = i + 1
+
+# Statements. A definition's own name, its parameters, a loop variable and a
+# match/except binding are all identifier positions and are renamed with the
+# references to them; struct fields, enum cases and dict keys are not. A
+# match arm's enum qualifier is an identifier position too (see below).
+
+def rw_stmt(node, ctx):
+    if node == null:
+        return
+    k = node["type"]
+    if k == "ASSIGNMENT" or k == "AUG_ASSIGNMENT":
+        node["target"] = rw_expr(node["target"], ctx)
+        node["value"] = rw_expr(node["value"], ctx)
+    elif k == "EXPR_STMT":
+        node["expr"] = rw_expr(node["expr"], ctx)
+    elif k == "RETURN_STMT":
+        if node["value"] != null:
+            node["value"] = rw_expr(node["value"], ctx)
+    elif k == "CONST_STMT":
+        node["name"] = rename_of(ctx["renames"], node["name"])
+        node["value"] = rw_expr(node["value"], ctx)
+    elif k == "IF_STMT":
+        node["cond"] = rw_expr(node["cond"], ctx)
+        rw_body(node["body"], ctx)
+        if node["else_body"] != null:
+            rw_body(node["else_body"], ctx)
+        branches = node["elif_branches"]
+        j = 0
+        while j < len(branches):
+            branches[j]["cond"] = rw_expr(branches[j]["cond"], ctx)
+            rw_body(branches[j]["body"], ctx)
+            j = j + 1
+    elif k == "WHILE_LOOP":
+        node["cond"] = rw_expr(node["cond"], ctx)
+        rw_body(node["body"], ctx)
+    elif k == "FOR_LOOP":
+        node["var"] = rename_of(ctx["renames"], node["var"])
+        node["iterable"] = rw_expr(node["iterable"], ctx)
+        rw_body(node["body"], ctx)
+    elif k == "FUNCTION_DEF":
+        node["name"] = rename_of(ctx["renames"], node["name"])
+        rename_names(ctx["renames"], node["params"])
+        rw_body(node["body"], ctx)
+    elif k == "STRUCT_DEF":
+        node["name"] = rename_of(ctx["renames"], node["name"])
+        rw_list(node["field_defaults"], ctx)
+    elif k == "ENUM_DEF":
+        node["name"] = rename_of(ctx["renames"], node["name"])
+    elif k == "MATCH_EXPR":
+        node["subject"] = rw_expr(node["subject"], ctx)
+        arms = node["arms"]
+        j = 0
+        while j < len(arms):
+            # A qualified arm's enum name is a *type* reference, the same
+            # `Color` in `Color.Red` a subject expression carries — the
+            # compiled arm compares it to the name the enum's instances hold,
+            # so it has to be rewritten to whatever the linker called the
+            # enum. The variant name after the dot is runtime data and is
+            # left alone.
+            qual = arms[j]["enum_name"]
+            if qual != "":
+                if qual in ctx["aliases"]:
+                    arms[j]["enum_name"] = ctx["aliases"][qual]
+                else:
+                    arms[j]["enum_name"] = rename_of(ctx["renames"], qual)
+            rename_names(ctx["renames"], arms[j]["params"])
+            rw_body(arms[j]["body"], ctx)
+            j = j + 1
+    elif k == "TRY_STMT":
+        rw_body(node["body"], ctx)
+        clauses = node["except_clauses"]
+        j = 0
+        while j < len(clauses):
+            if clauses[j]["name"] != null:
+                clauses[j]["name"] = rename_of(ctx["renames"], clauses[j]["name"])
+            rw_body(clauses[j]["body"], ctx)
+            j = j + 1
+        if node["finally_body"] != null:
+            rw_body(node["finally_body"], ctx)
+    elif k == "DEL_STMT":
+        node["target"] = rw_expr(node["target"], ctx)
+    elif k == "EXTERN_DECL":
+        node["name"] = rename_of(ctx["renames"], node["name"])
+
+def rw_body(body, ctx):
+    i = 0
+    while i < len(body):
+        rw_stmt(body[i], ctx)
+        i = i + 1
+
+def body_without_imports(program):
+    out = []
+    body = program["body"]
+    i = 0
+    while i < len(body):
+        if body[i]["type"] != "IMPORT_STMT":
+            out.append(body[i])
+        i = i + 1
+    return out
+
+# How this module refers to other modules: `import X` gives qualified access
+# to X, `from X import a` binds `a` to X's symbol, and `from . import util`
+# binds the submodule `util` locally. `mods` maps each of those local module
+# names to the absolute module it denotes; `aliases` maps a re-exported name to
+# the symbol it stands for.
+
+def make_ctx(program, owner, renames_all, symbols):
+    mods = {}
+    aliases = {}
+    imps = imports_of(program)
+    i = 0
+    while i < len(imps):
+        st = imps[i]
+        mname = st["module"]
+        if st["from_import"]:
+            names = st["names"]
+            j = 0
+            while j < len(names):
+                a = names[j]
+                if mname in symbols and a in symbols[mname]:
+                    aliases[a] = symbols[mname][a]
+                else:
+                    mods[a] = mname + "." + a
+                j = j + 1
+        else:
+            mods[mname] = mname
+        i = i + 1
+    ctx = {}
+    ctx["renames"] = renames_all[owner]
+    ctx["symbols"] = symbols
+    ctx["mods"] = mods
+    ctx["aliases"] = aliases
+    return ctx
+
+# ─── Entry point ───
+
+MAIN = "__main__"
+
+# Resolve `program`'s imports against `catalog` and return one program.
+# `catalog` maps module name to source (a package initializer is registered
+# under its package's name) and `packages` is the set of those names, which is
+# what makes a relative import start at the right level.
+
+def link(program, catalog, packages):
+    clear_errors()
+    modules = {}
+    order = []
+    load_modules(program, catalog, packages, modules, order, MAIN)
+
+    # Names each module defines at top level, then the ones owned by more than
+    # one module — the collisions that need a namespace.
+    defs = {}
+    defs[MAIN] = collect_defs(program)
+    for name in modules:
+        defs[name] = collect_defs(modules[name])
+
+    counts = {}
+    for owner in defs:
+        names = defs[owner]
+        for nm in names:
+            if nm in counts:
+                counts[nm] = counts[nm] + 1
+            else:
+                counts[nm] = 1
+
+    renames_all = {}
+    symbols = {}
+    for owner in defs:
+        rn = {}
+        sym = {}
+        names = defs[owner]
+        for nm in names:
+            final = nm
+            if counts[nm] > 1:
+                final = module_prefix(owner) + "_" + nm
+                rn[nm] = final
+            sym[nm] = final
+        renames_all[owner] = rn
+        symbols[owner] = sym
+
+    # A module's `from dep import name` is a re-export: `name` becomes part of
+    # what the module exports, so an importer can `from module import name`.
+    # Dependencies come first in `order`, so their symbols are already final;
+    # a name the module also defines itself wins over a re-export.
+    i = 0
+    while i < len(order):
+        mname = order[i]
+        sym = symbols[mname]
+        imps = imports_of(modules[mname])
+        j = 0
+        while j < len(imps):
+            st = imps[j]
+            target = st["module"]
+            if st["from_import"] and target in symbols:
+                names = st["names"]
+                k = 0
+                while k < len(names):
+                    nm = names[k]
+                    if (nm in symbols[target]) and not (nm in sym):
+                        sym[nm] = symbols[target][nm]
+                    k = k + 1
+            j = j + 1
+        i = i + 1
+
+    merged = []
+    i = 0
+    while i < len(order):
+        name = order[i]
+        ctx = make_ctx(modules[name], name, renames_all, symbols)
+        part = body_without_imports(modules[name])
+        rw_body(part, ctx)
+        j = 0
+        while j < len(part):
+            merged.append(part[j])
+            j = j + 1
+        i = i + 1
+
+    ctx_main = make_ctx(program, MAIN, renames_all, symbols)
+    main_part = body_without_imports(program)
+    rw_body(main_part, ctx_main)
+    i = 0
+    while i < len(main_part):
+        merged.append(main_part[i])
+        i = i + 1
+
+    result = {}
+    result["type"] = "PROGRAM"
+    result["body"] = merged
+    result["line"] = 0
+    result["col"] = 0
+    return result

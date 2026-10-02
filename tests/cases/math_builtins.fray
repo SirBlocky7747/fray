@@ -1,0 +1,26 @@
+# math builtins
+print(sqrt(4))    # 2.0
+print(isqrt(4))   # 2
+print(pi)         # 3.14159265358979...
+print(e)          # 2.71828182845904...
+
+# type conversions
+x = int("42")
+print(x)          # 42
+y = float(1)
+print(y)          # 1.0
+z = str(100)
+print(z)          # 100
+w = round(3.7)
+print(w)          # 4
+
+# Converting a value that already has the target type hands back an owned
+# reference of its own. These four used to free the box they had just
+# returned — both emitters release the argument after a unary builtin call,
+# and the pass-through returned that very box ("double free detected in
+# tcache 2", exit 134, no output). abs(int(x)) is how stdlib/random.fray's
+# seed() found it.
+print(int(42))          # 42
+print(float(1.5))       # 1.5
+print(round(5))         # 5
+print(abs(int(-42)))    # 42

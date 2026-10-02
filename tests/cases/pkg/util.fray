@@ -1,0 +1,9 @@
+# tests/cases/pkg/util.fray — a module inside a package directory, imported as
+# `pkg.util`. The golden runner only treats tests/cases/*.fray as cases, so this
+# is a module, not a test.
+
+def twice(x):
+    return x * 2
+
+
+OFFSET = 1

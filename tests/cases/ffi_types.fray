@@ -1,0 +1,11 @@
+# FFI shapes beyond ffi_basic's string -> int: an i64 argument and return, a
+# double return, and extern calls nested inside expressions.
+
+extern int strlen(string s)
+extern i64 atol(string s)
+extern f64 atof(string s)
+
+print(strlen("fray"))
+print(atol("-42"))
+print(atof("2.5") + 1.0)
+print(atol("5") + strlen("ab"))

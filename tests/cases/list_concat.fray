@@ -1,0 +1,46 @@
+# List concatenation (`a + b`).
+#
+# Both operands come from temporaries wherever a reference could be dropped by
+# mistake: the right-hand elements are owned *only* by the literal list, so a
+# concatenate that forgets to retain them leaves the result pointing at freed
+# boxes. That is the exact shape of the fray_add bug this case pins.
+
+# 1. A literal on the right: its elements die with the temporary.
+la = [1, 2]
+lb = la + [3, 4]
+print(lb)
+
+# 2. Both operands temporaries — the result owns everything it points at.
+lc = [10] + [20, 30]
+print(lc)
+
+# 3. Inside a nested block, where the old value is released as part of the
+#    store rather than at the end of the block.
+ld = [100]
+if True:
+    ld = ld + [200]
+print(ld)
+
+# 4. Accumulating in a loop: every round's right operand is a fresh temporary.
+le = []
+for k in range(4):
+    le = le + [k]
+print(le)
+
+# 5. Concatenating two named lists, then dropping the originals: the result
+#    must keep its own references to every element.
+lf = [1, 2]
+lg = [3, 4]
+lh = lf + lg
+lf = []
+lg = []
+print(lh)
+print(len(lh))
+
+# 6. A right operand nested one deeper, and an empty right operand.
+li = [7]
+lj = li + [[8, 9]]
+print(lj)
+print(lj[1][0])
+lk = li + []
+print(lk)

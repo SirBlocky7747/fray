@@ -1,0 +1,67 @@
+# `continue` jumps to the loop's continuation point, which is the increment
+# of a for loop and the condition of a while loop. It used to be a no-op in
+# the bootstrap emitter, so a `continue` silently ran the rest of the body;
+# these pin every shape the three loop emitters have.
+
+# In a while loop it re-tests the condition, so `i += 1` still happened.
+i = 0
+s = 0
+while i < 10:
+    i += 1
+    if i == 3:
+        continue
+    if i > 7:
+        break
+    s += i
+print(s)                 # 1+2+4+5+6+7 = 25
+
+# In a list loop it lands after the index increment.
+t = 0
+for v in [1, 2, 3, 4, 5, 6]:
+    if v % 2 == 0:
+        continue
+    t += v
+print(t)                 # 1+3+5 = 9
+
+# In a counted range loop it lands before the step, so the step still runs
+# and the skipped index is not repeated.
+u = 0
+for k in range(0, 10, 2):
+    if k == 4:
+        continue
+    u += k
+print(u)                 # 0+2+6+8 = 16
+
+# A body whose last statement is the jump: the block is already terminated
+# when the emitter reaches the latch, which must not append after it.
+p = 0
+for k in range(100):
+    p += 1
+    if p == 5:
+        break
+print(p)                 # 5
+
+q = 0
+for k in range(6):
+    q += 1
+    continue
+print(q)                 # 6
+
+# Nested: the inner continue belongs to the inner loop.
+r = []
+for a in range(3):
+    for b in range(4):
+        if b == 2:
+            continue
+        r.append(a * 10 + b)
+print(r)                 # [0, 1, 3, 10, 11, 13, 20, 21, 23]
+
+# A while loop whose only exit is the condition.
+n = 0
+m = 0
+while n < 5:
+    n += 1
+    if n % 2 == 0:
+        continue
+    m += n
+print(m)                 # 1+3+5 = 9

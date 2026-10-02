@@ -1,0 +1,206 @@
+# compiler/frayc.fray — the self-hosted compiler's command-line driver.
+#
+# usage: frayc <source.fray> [module_root...]
+#
+# Reads the program (fileRead), resolves its imports against a module catalog
+# built from directory convention — the same walk the host driver
+# tools/frayc_selfhosted.py used to do — and compiles through the self-hosted
+# pipeline: lex -> parse -> link -> sema -> codegen. The search roots, in
+# order, are the program's own directory, the extra module roots on the command
+# line, and the standard library beside the driver (`stdlib/`, so `import
+# random` resolves from anywhere); see register_roots.
+#
+# Output contract (consumed by tools/frayc_selfhosted.py):
+#   * a successful compile prints the LLVM IR between ===IR_START=== and
+#     ===IR_END=== markers on stdout
+#   * a rejected program prints "<STAGE> ERROR: file:line:col: message" lines
+#     (LEX / PARSE / LINK / SEMA / CODEGEN), prints no markers, and exits 1
+#
+# This file *is* Stage 2: built once by the bootstrap chain, it compiles a
+# program that is not embedded in it — including its own compiler sources —
+# with no Python in the compile loop, and the compiler it builds from itself
+# is the compiler that built it (tools/check_frontend.py --stage2 pins that
+# fixed point, down to bit-identical binaries).
+#
+# The backend is external on purpose: this driver emits LLVM IR text and
+# `llc`/`cc` turn it into a binary (tools/frayc.sh is that chain, and it is
+# the compile loop a release ships). The module carries no target triple, so
+# the same IR builds on every host.
+
+import lexer
+import parser
+import sema
+import codegen
+import link
+
+
+def dir_name(p):
+    # Directory part of a path ("a/b.fray" -> "a", "x.fray" -> "."). POSIX
+    # separators: the primary development target is Linux (README), and
+    # Windows support lands with the release-packaging phase.
+    parts = p.split("/")
+    if len(parts) < 2:
+        return "."
+    d = parts[0]
+    i = 1
+    while i < len(parts) - 1:
+        d = d + "/" + parts[i]
+        i = i + 1
+    if d == "":
+        d = "/"
+    return d
+
+
+def dir_entries(root):
+    # A directory the process may not read (a permission-denied sibling under
+    # the search root, say) must not abort the compile — it simply has no
+    # modules here. The host catalog walked with the same tolerance.
+    names = []
+    try:
+        names = listDir(root)
+    except ValueError:
+        names = []
+    return names
+
+
+def build_catalog(root, prefix, catalog, packages, depth):
+    # Register every module under root: file.fray -> "name" (or "prefix.name"
+    # below the root), dir/file.fray -> "dir.file", dir/__init__.fray -> the
+    # package "prefix" itself (and the package set gains "prefix", which is
+    # what lets the linker resolve a relative import from the right level).
+    # Files are registered before subdirectories are walked, so a plain module
+    # wins over a same-named package directory — the same rule the host
+    # catalog used. The depth cap keeps a symlink loop from hanging the
+    # compiler (it must always terminate).
+    if depth > 8:
+        return
+    names = dir_entries(root)
+    i = 0
+    while i < len(names):
+        name = names[i]
+        if isDir(root + "/" + name):
+            i = i + 1
+            continue
+        if name.endswith(".fray"):
+            base = name[0:len(name) - 5]
+            if base == "__init__":
+                # A top-level __init__.fray names no package.
+                if prefix != "" and not (prefix in catalog):
+                    catalog[prefix] = fileRead(root + "/" + name)
+                    packages[prefix] = True
+            else:
+                mod = base
+                if prefix != "":
+                    mod = prefix + "." + base
+                if not (mod in catalog):
+                    catalog[mod] = fileRead(root + "/" + name)
+        i = i + 1
+    i = 0
+    while i < len(names):
+        name = names[i]
+        if isDir(root + "/" + name):
+            sub = name
+            if prefix != "":
+                sub = prefix + "." + name
+            build_catalog(root + "/" + name, sub, catalog, packages, depth + 1)
+        i = i + 1
+
+
+def register_roots(argv, catalog, packages):
+    # The import roots the host supplies, after the program's own directory:
+    # each extra path in the order it was given (the compiler's directory, so
+    # a Stage-2 self-compile finds lexer/parser/sema/codegen/link by name),
+    # and last the standard library — `stdlib/` beside the driver binary's
+    # directory (`build/` in a checkout, `bin/` in a release package), which
+    # is what makes `import random` resolve from any working directory. A host
+    # that moves the driver elsewhere names the library itself, as the gates
+    # do. `build_catalog` skips a name it already holds, so an earlier root
+    # wins a clash.
+    #
+    # Every name here is a *local*, on purpose: a module-level assignment
+    # makes the name a global, and `collect_func_locals` then leaves any
+    # function that assigns the same name writing the global instead of a
+    # local. A top-level `i` for this loop reached every loop of
+    # `build_catalog` and the catalog walk never terminated.
+    k = 1
+    while k < len(argv):
+        build_catalog(argv[k], "", catalog, packages, 0)
+        k = k + 1
+    stdlib_dir = dir_name(progName()) + "/../stdlib"
+    if isDir(stdlib_dir):
+        build_catalog(stdlib_dir, "", catalog, packages, 0)
+
+
+def report_errors(stage, filename, errs):
+    i = 0
+    while i < len(errs):
+        print(stage + " ERROR: " + filename + ":" + errs[i])
+        i = i + 1
+
+
+def compile_source(src, filename, catalog, packages):
+    # One stage at a time; the first stage with errors stops the pipeline and
+    # reports. A stage's errors are collected in its own list — fresh in this
+    # process, because the driver compiles exactly one program per run.
+    lexer.clear_errors()
+    tokens = lexer.tokenize(src)
+    lerrs = lexer.get_errors()
+    if len(lerrs) > 0:
+        report_errors("LEX", filename, lerrs)
+        return ""
+
+    ast = parser.parse(tokens)
+    perrs = parser.get_errors()
+    if len(perrs) > 0:
+        report_errors("PARSE", filename, perrs)
+        return ""
+
+    linked = link.link(ast, catalog, packages)
+    lkerrs = link.get_errors()
+    if len(lkerrs) > 0:
+        report_errors("LINK", filename, lkerrs)
+        return ""
+
+    errs = sema.analyze(linked, filename)
+    if len(errs) > 0:
+        report_errors("SEMA", filename, errs)
+        return ""
+
+    codegen.clear_errors()
+    ir = codegen.compile_ir(linked)
+    cerrs = codegen.get_errors()
+    if len(cerrs) > 0:
+        report_errors("CODEGEN", filename, cerrs)
+        return ""
+
+    return ir
+
+
+# ── Entry ──
+
+argv = programArgs()
+if len(argv) < 1:
+    print("usage: frayc <source.fray> [module_root...]")
+    exit(2)
+
+src_path = argv[0]
+src = fileRead(src_path)
+
+catalog = {}
+packages = {}
+
+# Import search roots: the program's own directory first, then whatever the
+# host supplies and the standard library (see register_roots).
+source_dir = dir_name(src_path)
+build_catalog(source_dir, "", catalog, packages, 0)
+register_roots(argv, catalog, packages)
+
+ir = compile_source(src, src_path, catalog, packages)
+if ir != "":
+    print("===IR_START===")
+    print(ir)
+    print("===IR_END===")
+else:
+    # A rejected program is a failed compile: diagnostics went to stdout, and
+    # the exit status must say so (the host driver's callers rely on it).
+    exit(1)

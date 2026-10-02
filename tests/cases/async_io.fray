@@ -1,0 +1,32 @@
+# tests/cases/async_io.fray — non-blocking file I/O through the coroutine
+# scheduler, plus the channel rendezvous that connects coroutines to Phase 6
+# threads. readFileAsync/writeFileAsync hand the blocking syscall to a worker
+# and park the fiber; the loop resumes the fiber when the worker posts, so
+# neither call blocks the loop and the print order below must be exactly this
+# in both engines.
+async def writer(path, ch):
+    n = writeFileAsync(path, "hello from a worker thread")
+    send(ch, n)
+    return n
+
+
+async def reader(path, ch):
+    recv(ch)
+    text = readFileAsync(path)
+    send(ch, len(text))
+    return text
+
+
+async def main():
+    path = "/tmp/fray_async_io_case.txt"
+    ch = channel(1)
+    hw = writer(path, ch)
+    hr = reader(path, ch)
+    n = await hw
+    text = await hr
+    print(n)
+    print(text)
+
+
+main()
+runUntilComplete()

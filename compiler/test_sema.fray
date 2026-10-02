@@ -1,0 +1,95 @@
+# compiler/test_sema.fray — Test the semantic analyzer
+import lexer
+import parser
+import sema
+
+# Test 1: Valid code should have no errors
+src1 = "x = 1\ny = x + 2\nprint(y)\n"
+tokens1 = lexer.tokenize(src1)
+ast1 = parser.parse(tokens1)
+errs1 = sema.analyze(ast1, "test1.fray")
+if len(errs1) == 0:
+    print("TEST 1 PASS: valid code has no errors")
+else:
+    print("TEST 1 FAIL: unexpected errors: " + str(errs1))
+
+# Test 2: break outside loop should error
+src2 = "break\n"
+ast2 = parser.parse(lexer.tokenize(src2))
+errs2 = sema.analyze(ast2, "test2.fray")
+if len(errs2) == 1 and "break" in errs2[0]:
+    print("TEST 2 PASS: break outside loop detected")
+else:
+    print("TEST 2 FAIL: expected 1 break error, got " + str(len(errs2)))
+
+# Test 3: continue outside loop should error
+src3 = "continue\n"
+ast3 = parser.parse(lexer.tokenize(src3))
+errs3 = sema.analyze(ast3, "test3.fray")
+if len(errs3) == 1 and "continue" in errs3[0]:
+    print("TEST 3 PASS: continue outside loop detected")
+else:
+    print("TEST 3 FAIL: expected 1 continue error, got " + str(len(errs3)))
+
+# Test 4: return outside function should error
+src4 = "return 42\n"
+ast4 = parser.parse(lexer.tokenize(src4))
+errs4 = sema.analyze(ast4, "test4.fray")
+if len(errs4) == 1 and "return" in errs4[0]:
+    print("TEST 4 PASS: return outside function detected")
+else:
+    print("TEST 4 FAIL: expected 1 return error, got " + str(len(errs4)))
+
+# Test 5: break inside loop should be OK
+src5 = "while True:\n    break\n"
+ast5 = parser.parse(lexer.tokenize(src5))
+errs5 = sema.analyze(ast5, "test5.fray")
+if len(errs5) == 0:
+    print("TEST 5 PASS: break inside loop is valid")
+else:
+    print("TEST 5 FAIL: unexpected errors: " + str(errs5))
+
+# Test 6: function with params works
+src6 = "def add(a, b):\n    return a + b\nx = add(1, 2)\n"
+ast6 = parser.parse(lexer.tokenize(src6))
+errs6 = sema.analyze(ast6, "test6.fray")
+if len(errs6) == 0:
+    print("TEST 6 PASS: function definition is valid")
+else:
+    print("TEST 6 FAIL: unexpected errors: " + str(errs6))
+
+# Test 7: const reassignment should error
+src7 = "const x = 1\nx = 2\n"
+ast7 = parser.parse(lexer.tokenize(src7))
+errs7 = sema.analyze(ast7, "test7.fray")
+if len(errs7) == 1 and "const" in errs7[0]:
+    print("TEST 7 PASS: const reassignment detected")
+else:
+    print("TEST 7 FAIL: expected 1 const error, got " + str(len(errs7)))
+
+# Test 8: for loop variable is scoped
+src8 = "for i in range(5):\n    x = i\nprint(x)\n"
+ast8 = parser.parse(lexer.tokenize(src8))
+errs8 = sema.analyze(ast8, "test8.fray")
+if len(errs8) == 0:
+    print("TEST 8 PASS: for loop variable is scoped correctly")
+else:
+    print("TEST 8 FAIL: unexpected errors: " + str(errs8))
+
+# Test 9: match expression
+src9 = "enum Color:\n    case Red\nmatch Color.Red:\n    case Color.Red:\n        print(\"red\")\n    case _:\n        print(\"other\")\n"
+ast9 = parser.parse(lexer.tokenize(src9))
+errs9 = sema.analyze(ast9, "test9.fray")
+if len(errs9) == 0:
+    print("TEST 9 PASS: match expression is valid")
+else:
+    print("TEST 9 FAIL: unexpected errors: " + str(errs9))
+
+# Test 10: break inside nested loop is OK
+src10 = "while True:\n    for i in range(3):\n        if i == 1:\n            break\n"
+ast10 = parser.parse(lexer.tokenize(src10))
+errs10 = sema.analyze(ast10, "test10.fray")
+if len(errs10) == 0:
+    print("TEST 10 PASS: break in nested loop is valid")
+else:
+    print("TEST 10 FAIL: unexpected errors: " + str(errs10))

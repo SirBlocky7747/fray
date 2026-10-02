@@ -1,0 +1,55 @@
+# try/except: named clauses, a bare `except:`, catch-all clauses, an exception
+# only the enclosing try matches, and finally bodies that always run.
+
+xs = [1, 2, 3]
+
+try:
+    v = xs[9]
+except TypeError:
+    print("wrong clause")
+except:
+    print("bare except caught the index error")
+
+try:
+    v = xs[9]
+except ValueError:
+    print("wrong clause")
+except KeyError:
+    print("a name no engine raises")
+except IndexError:
+    print("second named clause matched")
+
+try:
+    v = 1 / 0
+except Exception:
+    print("Exception caught the division by zero")
+
+try:
+    v = xs[9]
+except RuntimeError:
+    print("RuntimeError caught the index error")
+
+try:
+    try:
+        v = xs[9]
+    except TypeError:
+        print("inner wrong clause")
+    print("inner body continues")
+except IndexError:
+    print("outer try caught it")
+
+try:
+    v = xs[9]
+except IndexError:
+    print("caught")
+finally:
+    print("finally ran")
+
+try:
+    v = xs[0]
+except IndexError:
+    print("no exception here")
+finally:
+    print("clean finally ran")
+
+print("done")

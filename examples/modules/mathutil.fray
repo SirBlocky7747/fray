@@ -1,0 +1,9 @@
+# mathutil.fray — a module is just another .fray file next to the importer.
+def add(a, b):
+    return a + b
+
+def multiply(a, b):
+    return a * b
+
+def shout(msg):
+    return msg.upper() + "!"

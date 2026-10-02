@@ -1,0 +1,30 @@
+# tests/cases/async_basic.fray — coroutines end to end. Three async functions
+# run on the scheduler: main waits on produce(3), produce yields with yieldNow()
+# three times and then awaits answer(42), and main suspends on a timer with
+# sleep(). runUntilComplete() drains them. Arguments cross the coroutine ABI as
+# the coroutine's own argument list. The compiled coroutine path must be silent
+# on stdout — the scheduler used to print D:/U:/T:/F: debug traces, so any line
+# here that is not program output fails the case.
+async def answer(x):
+    yieldNow()
+    return x
+
+
+async def produce(limit):
+    i = 0
+    while i < limit:
+        print(i)
+        yieldNow()
+        i += 1
+    return await answer(42)
+
+
+async def main():
+    r = await produce(3)
+    print(r)
+    await sleep(1)
+    print("done")
+
+
+main()
+runUntilComplete()

@@ -1,0 +1,21 @@
+enum Color:
+    case Red
+    case Green
+    case Blue
+
+print(Color.Red._variant)
+print(Color.Green._variant)
+print(Color.Blue._variant)
+
+enum Shape:
+    case Circle(radius)
+    case Rectangle(width, height)
+
+c = Shape.Circle(5)
+print(c._variant)
+print(c.radius)
+
+r = Shape.Rectangle(3, 4)
+print(r._variant)
+print(r.width)
+print(r.height)

@@ -1,0 +1,23 @@
+s = "Hello, World!"
+print(s.upper())
+print(s.lower())
+print(s.trim())
+
+padded = "   spaces   "
+print(padded.trim())
+
+s2 = "hello world hello"
+print(s2.find("world"))
+print(s2.find("xyz"))
+
+s3 = "foo bar foo baz foo"
+print(s3.replace("foo", "qux"))
+
+s4 = "a,b,c,d"
+print(s4.split(","))
+
+s5 = "Hello, World!"
+print(s5.startswith("Hello"))
+print(s5.startswith("Bye"))
+print(s5.endswith("!"))
+print(s5.endswith("?"))

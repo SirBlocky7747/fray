@@ -1,0 +1,16 @@
+# wordcount.fray — strings, maps and list builtins.
+text = "the quick brown fox jumps over the lazy dog the fox"
+
+words = text.split(" ")
+counts = {}
+for word in words:
+    if word in counts:
+        counts[word] = counts[word] + 1
+    else:
+        counts[word] = 1
+
+print("words: " + str(len(words)))
+print("distinct: " + str(len(counts.keys())))
+
+for w in ["the", "fox", "dog"]:
+    print(w + ": " + str(counts[w]))

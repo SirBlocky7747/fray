@@ -1,0 +1,39 @@
+# Phase 5: cycle collection. The refcount collector alone cannot
+# reclaim these; the trial-deletion cycle collector must.
+a = []
+b = []
+a.append(b)
+b.append(a)
+a = 0
+b = 0
+
+x = []
+x.append(x)
+x = 0
+
+# shared cycle: three nodes, each pointing at the next
+n1 = []
+n2 = []
+n3 = []
+n1.append(n2)
+n2.append(n3)
+n3.append(n1)
+n1 = 0
+n2 = 0
+n3 = 0
+
+# acyclic garbage must be freed by pure refcounting (no collector needed)
+for i in range(100000):
+    junk = [i, i + 1, i * 2]
+    junk = 0
+
+# cycles created and dropped repeatedly inside a loop
+for i in range(1000):
+    u = []
+    v = []
+    u.append(v)
+    v.append(u)
+    u = 0
+    v = 0
+
+print("cycles collected")

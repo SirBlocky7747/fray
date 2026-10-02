@@ -1,0 +1,104 @@
+# compiler/test_types.fray — Test type inference in the semantic analyzer
+import lexer
+import parser
+import sema
+
+def analyze_source(src, filename):
+    tokens = lexer.tokenize(src)
+    ast = parser.parse(tokens)
+    errs = sema.analyze(ast, filename)
+    return errs
+
+# Test 1: valid int arithmetic (no error expected)
+src1 = "x = 1\ny = 2\nz = x + y\n"
+errs1 = analyze_source(src1, "t1.fray")
+if len(errs1) == 0:
+    print("PASS: int arithmetic")
+else:
+    print("FAIL: int arithmetic: " + str(errs1))
+
+# Test 2: valid float arithmetic (no error expected)
+src2 = "x = 1.5\ny = 2.5\nz = x + y\n"
+errs2 = analyze_source(src2, "t2.fray")
+if len(errs2) == 0:
+    print("PASS: float arithmetic")
+else:
+    print("FAIL: float arithmetic: " + str(errs2))
+
+# Test 3: int + float should be OK (promotes to float)
+src3 = "x = 1\ny = 2.5\nz = x + y\n"
+errs3 = analyze_source(src3, "t3.fray")
+if len(errs3) == 0:
+    print("PASS: int + float")
+else:
+    print("FAIL: int + float: " + str(errs3))
+
+# Test 4: string concatenation is OK
+src4 = "a = \"hello\"\nb = \" world\"\nc = a + b\n"
+errs4 = analyze_source(src4, "t4.fray")
+if len(errs4) == 0:
+    print("PASS: string concatenation")
+else:
+    print("FAIL: string concat: " + str(errs4))
+
+# Test 5: string + int is OK (stringifies)
+src5 = "a = \"age: \"\nb = 25\nc = a + b\n"
+errs5 = analyze_source(src5, "t5.fray")
+if len(errs5) == 0:
+    print("PASS: string + int")
+else:
+    print("FAIL: string + int: " + str(errs5))
+
+# Test 6: string * int is OK (repetition)
+src6 = "a = \"ha\"\nb = a * 3\n"
+errs6 = analyze_source(src6, "t6.fray")
+if len(errs6) == 0:
+    print("PASS: string * int")
+else:
+    print("FAIL: string * int: " + str(errs6))
+
+# Test 7: bool + int should error
+src7 = "x = True\ny = 1\nz = x + y\n"
+errs7 = analyze_source(src7, "t7.fray")
+found_type_err = False
+i = 0
+while i < len(errs7):
+    if "type" in errs7[i] or "mismatch" in errs7[i]:
+        found_type_err = True
+    i = i + 1
+if found_type_err:
+    print("PASS: type mismatch detected for bool + int")
+else:
+    print("FAIL: expected type mismatch, got " + str(errs7))
+
+# Test 8: comparing int to int is OK
+src8 = "x = 1\ny = 2\nif x < y:\n    print(\"ok\")\n"
+errs8 = analyze_source(src8, "t8.fray")
+if len(errs8) == 0:
+    print("PASS: int comparison OK")
+else:
+    print("FAIL: int comparison: " + str(errs8))
+
+# Test 9: string multiplication with float should error
+src9 = "a = \"ha\"\nb = 3.5\nc = a * b\n"
+errs9 = analyze_source(src9, "t9.fray")
+found_type_err = False
+i = 0
+while i < len(errs9):
+    if "type" in errs9[i] or "mismatch" in errs9[i]:
+        found_type_err = True
+    i = i + 1
+if found_type_err:
+    print("PASS: string * float error")
+else:
+    print("FAIL: expected type mismatch, got " + str(errs9))
+
+# Test 10: for loop variable is int
+src10 = "for i in range(5):\n    x = i + 1\n"
+errs10 = analyze_source(src10, "t10.fray")
+if len(errs10) == 0:
+    print("PASS: for loop var is int")
+else:
+    print("FAIL: for loop: " + str(errs10))
+
+print("Done")

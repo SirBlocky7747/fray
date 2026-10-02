@@ -1,0 +1,23 @@
+# Phase 6: threads and atomics.
+# Two workers add to a shared atomic; joinAll waits for both.
+
+x = atomic(0)
+
+def bump():
+    i = 0
+    while i < 1000:
+        x.add(1)
+        i += 1
+
+spawn(bump)
+spawn(bump)
+joinAll()
+print(x.get())
+
+# Atomics also work without threads
+a = atomic(10)
+a.set(a.get() + 5)
+print(a.get())
+b = atomic(1)
+b.add(2)
+print(b.get())

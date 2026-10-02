@@ -1,0 +1,76 @@
+# compiler/test_sema_real.fray — Test sema on real fray source
+import lexer
+import parser
+import sema
+
+def analyze_source(src, filename):
+    tokens = lexer.tokenize(src)
+    ast = parser.parse(tokens)
+    errs = sema.analyze(ast, filename)
+    return errs
+
+# Test 1: simple valid code
+src1 = "print(42)\n"
+errs1 = analyze_source(src1, "hello.fray")
+if len(errs1) == 0:
+    print("PASS: simple valid")
+else:
+    print("FAIL: simple: " + str(errs1))
+
+# Test 2: function definition
+src2 = "def add(a, b):\n    return a + b\nx = add(1, 2)\n"
+errs2 = analyze_source(src2, "funcs.fray")
+if len(errs2) == 0:
+    print("PASS: function def")
+else:
+    print("FAIL: function: " + str(errs2))
+
+# Test 3: const reassignment
+src3 = "const PI = 3\nPI = 4\n"
+errs3 = analyze_source(src3, "const.fray")
+if len(errs3) > 0 and "const" in errs3[0]:
+    print("PASS: const reassignment detected")
+else:
+    print("FAIL: const: " + str(errs3))
+
+# Test 4: break outside loop
+src4 = "x = 1\nbreak\n"
+errs4 = analyze_source(src4, "break.fray")
+if len(errs4) > 0 and "break" in errs4[0]:
+    print("PASS: break outside loop")
+else:
+    print("FAIL: break: " + str(errs4))
+
+# Test 5: return outside function
+src5 = "return 42\n"
+errs5 = analyze_source(src5, "ret.fray")
+if len(errs5) > 0 and "return" in errs5[0]:
+    print("PASS: return outside func")
+else:
+    print("FAIL: return: " + str(errs5))
+
+# Test 6: unknown exception
+src6 = "try:\n    x = 1\nexcept BadError:\n    x = 2\n"
+errs6 = analyze_source(src6, "exc.fray")
+if len(errs6) > 0 and "exception" in errs6[0]:
+    print("PASS: unknown exception")
+else:
+    print("FAIL: exception: " + str(errs6))
+
+# Test 7: valid control flow (no errors expected)
+src7 = "total = 0\nfor i in range(5):\n    total = total + i\nprint(total)\n"
+errs7 = analyze_source(src7, "loop.fray")
+if len(errs7) == 0:
+    print("PASS: valid for loop")
+else:
+    print("FAIL: for loop: " + str(errs7))
+
+# Test 8: match with enums
+src8 = "enum Color:\n    case Red\n    case Blue\nmatch Color.Red:\n    case Color.Red:\n        print(\"red\")\n    case _:\n        print(\"other\")\n"
+errs8 = analyze_source(src8, "match.fray")
+if len(errs8) == 0:
+    print("PASS: match with enums")
+else:
+    print("FAIL: match: " + str(errs8))
+
+print("Done")

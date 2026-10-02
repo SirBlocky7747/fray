@@ -1,0 +1,19 @@
+# benchmarks/io_file_blocking.fray — the serial blocking baseline for
+# io_file_coro.fray. Same files, same count, one read at a time on one
+# thread. The gap between this and io_file_coro is what coroutine concurrency
+# buys; the gap between this and CPython is what the compiler buys.
+
+NFILES = 64
+DIR = "/tmp/fray_io_bench"
+
+
+def run_all():
+    total = 0
+    i = 0
+    while i < NFILES:
+        total = total + len(fileRead(DIR + "/f" + str(i) + ".txt"))
+        i += 1
+    print(total)
+
+
+run_all()

@@ -1,0 +1,24 @@
+# String slicing
+s = "hello world"
+print(s[0:5])
+print(s[6:11])
+print(s[:5])
+print(s[6:])
+print(s[-5:])
+print(s[::2])
+
+# Ord / chr
+print(ord("A"))
+print(ord("a"))
+print(chr(65))
+print(chr(97))
+
+# Round-trip
+print(chr(ord("z")))
+
+# List slicing
+nums = [10, 20, 30, 40, 50]
+print(nums[1:4])
+print(nums[:3])
+print(nums[2:])
+print(nums[::2])

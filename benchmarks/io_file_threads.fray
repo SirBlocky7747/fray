@@ -1,0 +1,47 @@
+# benchmarks/io_file_threads.fray — the same work as io_file_coro.fray, but
+# with one spawned OS thread per file instead of one coroutine per file.
+# This is the shape fray offers for CPU work, and the shape async-Python has
+# to use for blocking file I/O. Reading it next to io_file_coro shows what a
+# coroutine costs against an OS thread.
+#
+# spawn() targets must take no parameters, so the work list is handed out
+# through a channel buffered to hold all of it — an unbuffered one would
+# block the filler before any thread exists to receive. That is one send and
+# one recv per file, the same per-file channel cost io_file_coro pays to
+# collect its results, so the comparison is like for like.
+#
+# The runner rewrites the NFILES, NTHREADS and DIR constants below.
+
+NFILES = 48
+NTHREADS = 4
+DIR = "/tmp/fray_io_bench"
+total = atomic(0)
+queue = channel(NFILES)
+
+
+def readOne():
+    i = recv(queue)
+    text = fileRead(DIR + "/f" + str(i) + ".txt")
+    total.add(len(text))
+
+
+def run_all():
+    i = 0
+    while i < NFILES:
+        send(queue, i)
+        i += 1
+    i = 0
+    while i < NTHREADS:
+        spawn(readOne)
+        i += 1
+    joinAll()
+    # One thread takes one index; the rest are still sitting in the channel
+    # holding boxes nobody will ever read, so drain them or they leak.
+    i = 0
+    while i < NFILES - NTHREADS:
+        recv(queue)
+        i += 1
+    print(total.get())
+
+
+run_all()

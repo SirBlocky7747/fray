@@ -1,0 +1,20 @@
+# lists
+x = [1, 2, 3, 4]
+print(len(x))  # 4
+print(x[0])    # 1
+x[0] = 10
+print(x[0])    # 10
+x.append(5)
+print(len(x))  # 5
+print(x[-1])   # 5
+
+# tuples (immutable)
+t = (10, 20, 30)
+print(len(t))  # 3
+print(t[1])    # 20
+
+# sets
+s = {1, 2, 3, 4}
+print(len(s))  # 4
+s.append(5)
+print(len(s))  # 5

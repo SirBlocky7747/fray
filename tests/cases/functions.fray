@@ -1,0 +1,12 @@
+def greet(name):
+    return "hello"
+
+def add(a, b):
+    return a + b
+
+def status():
+    return "ok"
+
+print(greet("world"))
+print(add(2, 3))
+print(status())

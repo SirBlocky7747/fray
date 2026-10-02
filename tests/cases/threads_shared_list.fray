@@ -1,0 +1,21 @@
+# Phase 6: shared container mutation across threads.
+# Two workers append to one list; the striped locks keep it consistent.
+
+shared = []
+
+def fill():
+    i = 0
+    while i < 500:
+        shared.append(i)
+        i += 1
+
+spawn(fill)
+spawn(fill)
+joinAll()
+print(len(shared))
+
+# Shared object mutated from the main thread too
+shared.append(999)
+print(len(shared))
+print(shared.depend())
+print(len(shared))

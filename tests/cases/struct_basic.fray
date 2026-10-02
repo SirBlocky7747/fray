@@ -1,0 +1,23 @@
+struct Token:
+    kind = 0
+    value = ""
+    line = 1
+    col = 0
+
+t = Token(5, "hello", 2, 3)
+print(t.kind)
+print(t.value)
+t.kind = 10
+print(t.kind)
+print(t.line)
+
+struct Point:
+    x = 0
+    y = 0
+
+p1 = Point(3, 4)
+p2 = Point(3, 4)
+print(p1.x)
+print(p1.y)
+print(p1 == p2)
+print(p1 == p1)

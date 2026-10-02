@@ -1,0 +1,21 @@
+# Sets answer the same two method spellings lists do: `.append` adds an
+# element unless the set already holds it, and `.depend` removes and returns
+# one. Nothing here depends on iteration order (the engines promise none), so
+# the printed values are lengths and a one-element pop.
+#
+# The set arm of these methods is what tools/check_fray_txt.py's audit of the
+# reference turned up: the native emitter lowered every `.depend` to the list
+# operation, so a set threw "IndexError: pop from empty list".
+
+s = {5}
+s.append(5)         # already present: deduplicated
+print(len(s))       # 1
+print(s.depend())   # 5
+print(len(s))       # 0
+
+s.append(7)
+s.append(7)
+s.append(8)
+print(len(s))       # 2
+s.depend()
+print(len(s))       # 1

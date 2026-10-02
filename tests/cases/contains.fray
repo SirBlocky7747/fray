@@ -1,0 +1,25 @@
+# List membership
+nums = [1, 2, 3, 4, 5]
+print(3 in nums)
+print(6 in nums)
+
+# Tuple membership
+pair = (10, 20)
+print(10 in pair)
+print(30 in pair)
+
+# Set membership
+s = {1, 2, 3}
+print(2 in s)
+print(5 in s)
+
+# String substring
+greeting = "hello world"
+print("world" in greeting)
+print("xyz" in greeting)
+print("" in greeting)
+
+# Map key membership
+m = {"a": 1, "b": 2}
+print("a" in m)
+print("c" in m)

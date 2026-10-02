@@ -1,0 +1,8 @@
+# Phase 5 benchmark: dense int/float arithmetic (fast paths)
+acc = 0
+f = 0.5
+for i in range(3000000):
+    acc = acc + i * 2 - i
+    f = f + 0.25
+print(acc)
+print(f)

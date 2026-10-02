@@ -1,0 +1,53 @@
+# Recursion: int/float specialization, mutual recursion, and shapes that
+# must stay on the boxed path.
+
+def fib(n):
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+def countdown(n):
+    if n == 0:
+        return 0
+    return 1 + countdown(n - 1)
+
+def sum_to(n, acc):
+    if n == 0:
+        return acc
+    return sum_to(n - 1, acc + n)
+
+def harmonic(n):
+    if n == 0:
+        return 0.0
+    return harmonic(n - 1) + 1.0
+
+def halve(n):
+    if n == 0:
+        return 1
+    return halve(n - 1) / 2
+
+def is_even(n):
+    if n == 0:
+        return 1
+    return is_odd(n - 1)
+
+def is_odd(n):
+    if n == 0:
+        return 0
+    return is_even(n - 1)
+
+def mixed(n):
+    if n == 0:
+        return "done"
+    return mixed(n - 1)
+
+print(fib(18))
+print(countdown(200))
+print(sum_to(100, 0))
+print(harmonic(4))
+print(halve(3))
+print(is_even(10))
+print(is_odd(10))
+print(mixed(2))
+print(fib(0))
+print(countdown(0))

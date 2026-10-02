@@ -1,0 +1,38 @@
+# tests/cases/async_net.fray — non-blocking socket I/O. Two coroutines drive a
+# loopback TCP pair: the listener binds an ephemeral port, hands it to the
+# client over a channel, and both sides park on a worker (accept, connect,
+# read, write) while the loop keeps running. tcpListen binds 127.0.0.1 only,
+# and tcpPort reports the port the kernel chose, so the case needs no fixed
+# port and cannot collide with anything else on the host.
+async def server(portCh):
+    srv = tcpListen(0)
+    send(portCh, tcpPort(srv))
+    conn = tcpAccept(srv)
+    data = readAsync(conn, 64)
+    writeAsync(conn, "pong:" + data)
+    closeSocket(conn)
+    closeSocket(srv)
+    return data
+
+
+async def client(portCh):
+    port = recv(portCh)
+    conn = tcpConnect("127.0.0.1", port)
+    writeAsync(conn, "ping")
+    reply = readAsync(conn, 64)
+    closeSocket(conn)
+    return reply
+
+
+async def main():
+    ch = channel(1)
+    hs = server(ch)
+    hc = client(ch)
+    s = await hs
+    c = await hc
+    print("server: " + s)
+    print("client: " + c)
+
+
+main()
+runUntilComplete()

@@ -1,0 +1,19 @@
+# primes.fray — while loops, break/continue and boolean logic.
+def is_prime(n):
+    if n < 2:
+        return False
+    d = 2
+    while d * d <= n:
+        if n % d == 0:
+            return False
+        d += 1
+    return True
+
+count = 0
+for n in range(2, 50):
+    if not is_prime(n):
+        continue
+    print(n)
+    count += 1
+
+print("primes below 50: " + str(count))

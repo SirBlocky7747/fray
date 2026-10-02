@@ -1,0 +1,477 @@
+# compiler/lexer.fray — Self-hosted lexer for the fray language
+# Tokenizes source code into a list of tokens with INDENT/DEDENT support.
+#
+# Usage:
+#   source = readFile("test.fray")
+#   tokens = tokenize(source)
+#   for tok in tokens:
+#       print(tok.tt, tok.val)
+
+# ─── Token types ───
+
+enum TokenType:
+    # Literals
+    case INT_LIT
+    case FLOAT_LIT
+    case STRING_LIT
+    case IDENT
+
+    # Keywords
+    case DEF
+    case RETURN
+    case IF
+    case ELIF
+    case ELSE
+    case FOR
+    case IN
+    case WHILE
+    case TRY
+    case EXCEPT
+    case FINALLY
+    case CONST
+    case IMPORT
+    case FROM
+    case EXTERN
+    case ASYNC
+    case AWAIT
+    case STRUCT
+    case ENUM
+    case CASE
+    case MATCH
+    case DEL
+    case BREAK
+    case CONTINUE
+    case AND
+    case OR
+    case XOR
+    case XNOR
+    case NOT
+    case TRUE
+    case FALSE
+    case NULL
+
+    # Operators
+    case ASSIGN
+    case PLUS_ASSIGN
+    case MINUS_ASSIGN
+    case STAR_ASSIGN
+    case SLASH_ASSIGN
+    case PERCENT_ASSIGN
+    case POWER_ASSIGN
+    case EQ
+    case NEQ
+    case LT
+    case GT
+    case LTE
+    case GTE
+    case PLUS
+    case MINUS
+    case STAR
+    case SLASH
+    case DOUBLE_SLASH
+    case DOUBLE_SLASH_ASSIGN
+    case PERCENT
+    case POWER
+
+    # Delimiters
+    case LPAREN
+    case RPAREN
+    case LBRACKET
+    case RBRACKET
+    case LBRACE
+    case RBRACE
+    case COMMA
+    case COLON
+    case DOT
+    case QUESTION
+
+    # Structural
+    case INDENT_TOK
+    case DEDENT_TOK
+    case NEWLINE_TOK
+    case EOF_TOK
+
+# ─── Token struct ───
+
+struct Token:
+    tt
+    val
+    line
+    col
+
+# ─── Lexer state struct ───
+
+struct LexerState:
+    src
+    pos
+    line
+    col
+    indent_stack
+    tokens
+    pending_dedents
+
+# ─── Keyword lookup table ───
+
+def init_keywords():
+    kw = {}
+    kw["def"] = "DEF"
+    kw["return"] = "RETURN"
+    kw["if"] = "IF"
+    kw["elif"] = "ELIF"
+    kw["else"] = "ELSE"
+    kw["for"] = "FOR"
+    kw["in"] = "IN"
+    kw["while"] = "WHILE"
+    kw["try"] = "TRY"
+    kw["except"] = "EXCEPT"
+    kw["finally"] = "FINALLY"
+    kw["const"] = "CONST"
+    kw["import"] = "IMPORT"
+    kw["from"] = "FROM"
+    kw["extern"] = "EXTERN"
+    kw["async"] = "ASYNC"
+    kw["await"] = "AWAIT"
+    kw["and"] = "AND"
+    kw["or"] = "OR"
+    kw["xor"] = "XOR"
+    kw["xnor"] = "XNOR"
+    kw["not"] = "NOT"
+    kw["True"] = "TRUE"
+    kw["False"] = "FALSE"
+    kw["null"] = "NULL"
+    kw["break"] = "BREAK"
+    kw["continue"] = "CONTINUE"
+    kw["struct"] = "STRUCT"
+    kw["enum"] = "ENUM"
+    kw["case"] = "CASE"
+    kw["match"] = "MATCH"
+    kw["del"] = "DEL"
+    return kw
+
+KEYWORDS = init_keywords()
+
+# ─── Single-char token lookup ───
+
+def init_single_chars():
+    sc = {}
+    sc["("] = "LPAREN"
+    sc[")"] = "RPAREN"
+    sc["["] = "LBRACKET"
+    sc["]"] = "RBRACKET"
+    sc["{"] = "LBRACE"
+    sc["}"] = "RBRACE"
+    sc[","] = "COMMA"
+    sc[":"] = "COLON"
+    sc["."] = "DOT"
+    sc["?"] = "QUESTION"
+    return sc
+
+SINGLE_CHARS = init_single_chars()
+
+# ─── Error collection ───
+#
+# Diagnostics are collected, not printed: the driver that runs the compiler
+# shows them (tools/frayc_selfhosted.py). A list is also the only mechanism
+# available in compiled fray, where there is no exception to unwind.
+
+errors = []
+
+def get_errors():
+    return errors
+
+def clear_errors():
+    while len(errors) > 0:
+        errors.depend()
+
+def lexer_error(msg, line, col):
+    errors.append(str(line) + ":" + str(col) + ": " + msg)
+    return null
+
+# ─── Character helpers ───
+
+def lex_advance(lex):
+    ch = lex.src[lex.pos]
+    lex.pos = lex.pos + 1
+    lex.col = lex.col + 1
+    return ch
+
+def lex_peek(lex, offset):
+    idx = lex.pos + offset
+    if idx < len(lex.src):
+        return lex.src[idx]
+    return ""
+
+def lex_emit(lex, tt_name, val, line, col):
+    tok = Token(tt_name, val, line, col)
+    lex.tokens.append(tok)
+
+# ─── Skip whitespace ───
+
+def lex_skip_whitespace(lex):
+    while lex.pos < len(lex.src):
+        ch = lex.src[lex.pos]
+        if ch == " " or ch == "\t":
+            lex_advance(lex)
+        else:
+            break
+
+# ─── Skip comment ───
+
+def lex_skip_comment(lex):
+    while lex.pos < len(lex.src) and lex.src[lex.pos] != "\n":
+        lex_advance(lex)
+
+# ─── Handle newline + INDENT/DEDENT ───
+
+def lex_handle_newline(lex):
+    lex_advance(lex)
+    lex.line = lex.line + 1
+    lex.col = 1
+
+    # Skip blank lines and comment-only lines
+    indent = 0
+    while lex.pos < len(lex.src):
+        indent = 0
+        while lex.pos < len(lex.src) and lex.src[lex.pos] == " ":
+            indent = indent + 1
+            lex.pos = lex.pos + 1
+            lex.col = lex.col + 1
+
+        if lex.pos >= len(lex.src) or lex.src[lex.pos] == "\n" or lex.src[lex.pos] == "#":
+            if lex.pos < len(lex.src) and lex.src[lex.pos] == "\n":
+                lex_advance(lex)
+                lex.line = lex.line + 1
+                lex.col = 1
+            elif lex.pos < len(lex.src) and lex.src[lex.pos] == "#":
+                lex_skip_comment(lex)
+                if lex.pos < len(lex.src) and lex.src[lex.pos] == "\n":
+                    lex_advance(lex)
+                    lex.line = lex.line + 1
+                    lex.col = 1
+            else:
+                break
+        else:
+            break
+
+    stack = lex.indent_stack
+    current_indent = stack[len(stack) - 1]
+
+    if indent > current_indent:
+        stack.append(indent)
+        lex_emit(lex, "INDENT_TOK", "", lex.line, lex.col)
+    elif indent < current_indent:
+        while stack[len(stack) - 1] > indent:
+            stack.depend()
+            lex_emit(lex, "DEDENT_TOK", "", lex.line, lex.col)
+        if stack[len(stack) - 1] != indent:
+            lexer_error("indentation does not match any outer level", lex.line, lex.col)
+
+    lex_emit(lex, "NEWLINE_TOK", "\\n", lex.line, lex.col)
+
+# ─── Read string literal ───
+
+def lex_read_string(lex):
+    line = lex.line
+    col = lex.col
+    lex_advance(lex)  # skip opening "
+    parts = ""
+    while lex.pos < len(lex.src):
+        ch = lex.src[lex.pos]
+        if ch == "\"":
+            lex_advance(lex)
+            lex_emit(lex, "STRING_LIT", parts, line, col)
+            return
+        elif ch == "\\":
+            lex_advance(lex)
+            if lex.pos >= len(lex.src):
+                # Trailing backslash at end of file: there is no escape to read
+                lexer_error("unterminated string literal", line, col)
+                return
+            esc = lex_advance(lex)
+            if esc == "n":
+                parts = parts + "\n"
+            elif esc == "t":
+                parts = parts + "\t"
+            elif esc == "\\":
+                parts = parts + "\\"
+            elif esc == "\"":
+                parts = parts + "\""
+            elif esc == "0":
+                parts = parts + "\0"
+            else:
+                parts = parts + esc
+        elif ch == "\n":
+            # Unterminated: report it and abandon the rest of the line, leaving
+            # the newline for the main loop (which emits the statement
+            # terminator). Skipping guarantees this call always makes progress.
+            lexer_error("unterminated string literal", line, col)
+            while lex.pos < len(lex.src) and lex.src[lex.pos] != "\n":
+                lex_advance(lex)
+            return
+        else:
+            parts = parts + ch
+            lex_advance(lex)
+    lexer_error("unterminated string literal", line, col)
+
+# ─── Read number literal ───
+
+def lex_read_number(lex):
+    line = lex.line
+    col = lex.col
+    start = lex.pos
+    is_float = False
+
+    while lex.pos < len(lex.src) and lex.src[lex.pos] >= "0" and lex.src[lex.pos] <= "9":
+        lex_advance(lex)
+
+    if lex.pos < len(lex.src) and lex.src[lex.pos] == ".":
+        if lex.pos + 1 < len(lex.src) and lex.src[lex.pos + 1] >= "0" and lex.src[lex.pos + 1] <= "9":
+            is_float = True
+            lex_advance(lex)  # skip .
+            while lex.pos < len(lex.src) and lex.src[lex.pos] >= "0" and lex.src[lex.pos] <= "9":
+                lex_advance(lex)
+
+    value = lex.src[start:lex.pos]
+    if is_float:
+        lex_emit(lex, "FLOAT_LIT", value, line, col)
+    else:
+        lex_emit(lex, "INT_LIT", value, line, col)
+
+# ─── Read identifier or keyword ───
+
+def lex_read_identifier(lex):
+    line = lex.line
+    col = lex.col
+    start = lex.pos
+    while lex.pos < len(lex.src):
+        ch = lex.src[lex.pos]
+        if (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z") or (ch >= "0" and ch <= "9") or ch == "_":
+            lex_advance(lex)
+        else:
+            break
+    word = lex.src[start:lex.pos]
+    tt = null
+    if word in KEYWORDS:
+        tt = KEYWORDS[word]
+    if tt != null:
+        lex_emit(lex, tt, word, line, col)
+    else:
+        lex_emit(lex, "IDENT", word, line, col)
+
+# ─── Main tokenize function ───
+
+def tokenize(source):
+    clear_errors()
+    lex = LexerState(source, 0, 1, 1, [0], [], 0)
+
+    # Emit initial newline to handle indentation at start of file
+    lex_emit(lex, "NEWLINE_TOK", "\\n", 1, 1)
+
+    while lex.pos < len(lex.src):
+        ch = lex.src[lex.pos]
+
+        if ch == "#":
+            lex_skip_comment(lex)
+        elif ch == "\n":
+            lex_handle_newline(lex)
+        elif ch == " " or ch == "\t":
+            lex_skip_whitespace(lex)
+        elif ch == "\"":
+            lex_read_string(lex)
+        elif ch >= "0" and ch <= "9":
+            lex_read_number(lex)
+        elif (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z") or ch == "_":
+            lex_read_identifier(lex)
+        elif ch in SINGLE_CHARS:
+            lex_advance(lex)
+            lex_emit(lex, SINGLE_CHARS[ch], ch, lex.line, lex.col - 1)
+        elif ch == "=":
+            lex_advance(lex)
+            if lex_peek(lex, 0) == "=":
+                lex_advance(lex)
+                lex_emit(lex, "EQ", "==", lex.line, lex.col - 2)
+            else:
+                lex_emit(lex, "ASSIGN", "=", lex.line, lex.col - 1)
+        elif ch == "+":
+            lex_advance(lex)
+            if lex_peek(lex, 0) == "=":
+                lex_advance(lex)
+                lex_emit(lex, "PLUS_ASSIGN", "+=", lex.line, lex.col - 2)
+            else:
+                lex_emit(lex, "PLUS", "+", lex.line, lex.col - 1)
+        elif ch == "-":
+            lex_advance(lex)
+            if lex_peek(lex, 0) == "=":
+                lex_advance(lex)
+                lex_emit(lex, "MINUS_ASSIGN", "-=", lex.line, lex.col - 2)
+            else:
+                lex_emit(lex, "MINUS", "-", lex.line, lex.col - 1)
+        elif ch == "*":
+            lex_advance(lex)
+            if lex_peek(lex, 0) == "=":
+                lex_advance(lex)
+                lex_emit(lex, "STAR_ASSIGN", "*=", lex.line, lex.col - 2)
+            else:
+                lex_emit(lex, "STAR", "*", lex.line, lex.col - 1)
+        elif ch == "/":
+            lex_advance(lex)
+            if lex_peek(lex, 0) == "/":
+                lex_advance(lex)
+                if lex_peek(lex, 0) == "=":
+                    lex_advance(lex)
+                    lex_emit(lex, "DOUBLE_SLASH_ASSIGN", "//=", lex.line, lex.col - 3)
+                else:
+                    lex_emit(lex, "DOUBLE_SLASH", "//", lex.line, lex.col - 2)
+            elif lex_peek(lex, 0) == "=":
+                lex_advance(lex)
+                lex_emit(lex, "SLASH_ASSIGN", "/=", lex.line, lex.col - 2)
+            else:
+                lex_emit(lex, "SLASH", "/", lex.line, lex.col - 1)
+        elif ch == "%":
+            lex_advance(lex)
+            if lex_peek(lex, 0) == "=":
+                lex_advance(lex)
+                lex_emit(lex, "PERCENT_ASSIGN", "%=", lex.line, lex.col - 2)
+            else:
+                lex_emit(lex, "PERCENT", "%", lex.line, lex.col - 1)
+        elif ch == "^":
+            lex_advance(lex)
+            if lex_peek(lex, 0) == "=":
+                lex_advance(lex)
+                lex_emit(lex, "POWER_ASSIGN", "^=", lex.line, lex.col - 2)
+            else:
+                lex_emit(lex, "POWER", "^", lex.line, lex.col - 1)
+        elif ch == "!":
+            lex_advance(lex)
+            if lex_peek(lex, 0) == "=":
+                lex_advance(lex)
+                lex_emit(lex, "NEQ", "!=", lex.line, lex.col - 2)
+            else:
+                lexer_error("unexpected character \"!\"", lex.line, lex.col - 1)
+        elif ch == "<":
+            lex_advance(lex)
+            if lex_peek(lex, 0) == "=":
+                lex_advance(lex)
+                lex_emit(lex, "LTE", "<=", lex.line, lex.col - 2)
+            else:
+                lex_emit(lex, "LT", "<", lex.line, lex.col - 1)
+        elif ch == ">":
+            lex_advance(lex)
+            if lex_peek(lex, 0) == "=":
+                lex_advance(lex)
+                lex_emit(lex, "GTE", ">=", lex.line, lex.col - 2)
+            else:
+                lex_emit(lex, "GT", ">", lex.line, lex.col - 1)
+        else:
+            # Skip the offending character: every branch of this loop consumes
+            # at least one byte, so tokenize() cannot loop forever.
+            lexer_error("unexpected character \"" + ch + "\"", lex.line, lex.col)
+            lex_advance(lex)
+
+    # End of file: emit DEDENTs for any remaining indentation, then EOF
+    while len(lex.indent_stack) > 1:
+        lex.indent_stack.depend()
+        lex_emit(lex, "DEDENT_TOK", "", lex.line, lex.col)
+
+    lex_emit(lex, "EOF_TOK", "", lex.line, lex.col)
+    return lex.tokens

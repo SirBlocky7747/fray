@@ -1,0 +1,18 @@
+# concurrency.fray — threads that share an atomic counter and a list.
+# Nothing here holds the GIL: there is no GIL.
+counter = atomic(0)
+shared = []
+
+def worker():
+    i = 0
+    while i < 1000:
+        counter.add(1)
+        shared.append(i)
+        i += 1
+
+spawn(worker)
+spawn(worker)
+joinAll()
+
+print("counter: " + str(counter.get()))
+print("items:   " + str(len(shared)))

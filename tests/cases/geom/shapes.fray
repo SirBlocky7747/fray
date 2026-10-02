@@ -1,0 +1,6 @@
+# tests/cases/geom/shapes.fray — imported by the initializer as
+# `from . import shapes` and used qualified (`shapes.sides()`), so the module
+# is bound under its local name inside the package.
+
+def sides():
+    return 4

@@ -1,0 +1,4 @@
+type error caught
+finally ran
+clean finally
+done

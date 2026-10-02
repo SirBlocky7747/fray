@@ -1,0 +1,17 @@
+# async.fray — coroutines, await and the scheduler. Calling an async function
+# starts it; runUntilComplete() drains the scheduler.
+async def fetch(name, ms):
+    print("fetching " + name)
+    await sleep(ms)
+    return name + " ready"
+
+async def main():
+    a = await fetch("config", 1)
+    print(a)
+    yieldNow()
+    b = await fetch("data", 1)
+    print(b)
+    print("all fetched")
+
+main()
+runUntilComplete()

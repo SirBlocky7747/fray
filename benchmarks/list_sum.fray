@@ -1,0 +1,11 @@
+# Phase 5 benchmark: integer list build + sum loop (allocation + GC churn)
+total = 0
+for k in range(20):
+    xs = []
+    for i in range(50000):
+        xs.append(i)
+    s = 0
+    for i in xs:
+        s = s + i
+    total = total + s
+print(total)

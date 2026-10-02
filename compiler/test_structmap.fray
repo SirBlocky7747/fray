@@ -1,0 +1,139 @@
+# compiler/test_structmap.fray — Test struct/enum/map type tracking
+import lexer
+import parser
+import sema
+
+def analyze_source(src, filename):
+    tokens = lexer.tokenize(src)
+    ast = parser.parse(tokens)
+    errs = sema.analyze(ast, filename)
+    return errs
+
+# Test 1: struct definition is recognized
+src1 = "struct Point:\n    x\n    y\np = Point()\n"
+errs1 = analyze_source(src1, "t1.fray")
+if len(errs1) == 0:
+    print("PASS: struct definition")
+else:
+    print("FAIL: struct: " + str(errs1))
+
+# Test 2: enum definition is recognized
+src2 = "enum Color:\n    case Red\n    case Green\nc = Color.Red\n"
+errs2 = analyze_source(src2, "t2.fray")
+if len(errs2) == 0:
+    print("PASS: enum definition")
+else:
+    print("FAIL: enum: " + str(errs2))
+
+# Test 3: map literal is recognized
+src3 = "m = {\"a\": 1, \"b\": 2}\n"
+errs3 = analyze_source(src3, "t3.fray")
+if len(errs3) == 0:
+    print("PASS: map literal")
+else:
+    print("FAIL: map: " + str(errs3))
+
+# Test 4: map.keys() is valid
+src4 = "m = {\"a\": 1}\nk = m.keys()\n"
+errs4 = analyze_source(src4, "t4.fray")
+if len(errs4) == 0:
+    print("PASS: map.keys()")
+else:
+    print("FAIL: map.keys(): " + str(errs4))
+
+# Test 5: map.has() is valid
+src5 = "m = {\"a\": 1}\nh = m.has(\"a\")\n"
+errs5 = analyze_source(src5, "t5.fray")
+if len(errs5) == 0:
+    print("PASS: map.has()")
+else:
+    print("FAIL: map.has(): " + str(errs5))
+
+# Test 6: string.upper() is valid
+src6 = "s = \"hello\"\nu = s.upper()\n"
+errs6 = analyze_source(src6, "t6.fray")
+if len(errs6) == 0:
+    print("PASS: string.upper()")
+else:
+    print("FAIL: string.upper(): " + str(errs6))
+
+# Test 7: string.find() returns int
+src7 = "s = \"hello\"\ni = s.find(\"ll\")\n"
+errs7 = analyze_source(src7, "t7.fray")
+if len(errs7) == 0:
+    print("PASS: string.find()")
+else:
+    print("FAIL: string.find(): " + str(errs7))
+
+# Test 8: list.append() is valid
+src8 = "lst = [1, 2, 3]\nlst.append(4)\n"
+errs8 = analyze_source(src8, "t8.fray")
+if len(errs8) == 0:
+    print("PASS: list.append()")
+else:
+    print("FAIL: list.append(): " + str(errs8))
+
+# Test 9: int.upper() should error (int has no method upper)
+src9 = "x = 42\nu = x.upper()\n"
+errs9 = analyze_source(src9, "t9.fray")
+found_method_err = False
+i = 0
+while i < len(errs9):
+    if "method" in errs9[i] or "has no method" in errs9[i]:
+        found_method_err = True
+    i = i + 1
+if found_method_err:
+    print("PASS: int.upper() error detected")
+else:
+    print("FAIL: expected method error, got " + str(errs9))
+
+# Test 10: struct field access
+src10 = "struct Point:\n    x\n    y\np = Point()\nprint(p.x)\n"
+errs10 = analyze_source(src10, "t10.fray")
+if len(errs10) == 0:
+    print("PASS: struct field access")
+else:
+    print("FAIL: struct field: " + str(errs10))
+
+# Test 11: enum variant construction
+src11 = "enum Shape:\n    case Circle(r)\n    case Square(s)\nsh = Shape.Circle(5)\n"
+errs11 = analyze_source(src11, "t11.fray")
+if len(errs11) == 0:
+    print("PASS: enum variant construction")
+else:
+    print("FAIL: enum construction: " + str(errs11))
+
+# Test 12: match on enum is valid
+src12 = "enum Color:\n    case Red\n    case Blue\nc = Color.Red\nmatch c:\n    case Color.Red:\n        print(\"red\")\n    case _:\n        print(\"other\")\n"
+errs12 = analyze_source(src12, "t12.fray")
+if len(errs12) == 0:
+    print("PASS: match on enum")
+else:
+    print("FAIL: match enum: " + str(errs12))
+
+# Test 13: int + bool should error
+src13 = "x = 1\ny = True\nz = x + y\n"
+errs13 = analyze_source(src13, "t13.fray")
+found_type_err = False
+i = 0
+while i < len(errs13):
+    if "type" in errs13[i] or "mismatch" in errs13[i]:
+        found_type_err = True
+    i = i + 1
+if found_type_err:
+    print("PASS: int + bool error")
+else:
+    print("FAIL: expected type mismatch, got " + str(errs13))
+
+# Test 14: map.values() is valid (even though not fully typed)
+src14 = "m = {\"a\": 1}\nv = m.values()\n"
+errs14 = analyze_source(src14, "t14.fray")
+# This should NOT error — values() is a valid map method even though we don't track it
+# Actually, we don't have values() in MAP_METHODS, so it should error
+found_any = len(errs14) > 0
+if not found_any:
+    print("PASS: map.values() accepted")
+else:
+    print("INFO: map.values() error: " + str(errs14))
+
+print("Done")

@@ -1,0 +1,12 @@
+# tests/cases/geom/__init__.fray — the package initializer. It defines the
+# package's own names and re-exports `double` from its `util` module, so
+# `from geom import double` works without the importer knowing the package's
+# internal layout. `from . import shapes` binds a sibling module under its
+# local name, so it can be used qualified (`shapes.sides()`).
+
+from .util import double
+from . import shapes
+
+
+def describe(n):
+    return "geom:" + str(double(n)) + ":" + str(shapes.sides())

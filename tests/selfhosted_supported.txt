@@ -1,0 +1,53 @@
+# Golden cases the self-hosted frontend compiles and runs correctly.
+# Maintained by tools/check_frontend.py (--update). A case listed here
+# that starts reporting a diagnostic fails the gate; a case that starts
+# compiling is reported as newly supported so it can be added.
+append_type_error
+async_basic
+async_io
+async_net
+aug_assign
+basic_math
+booleans
+containers
+contains
+continue
+control_flow
+cycle_collection
+domination_regression
+dotted_import
+enum_basic
+error_handling
+ffi_basic
+ffi_types
+functions
+function_value
+import_test
+list_concat
+maps
+match_basic
+match_qualified
+math_builtins
+option_result
+ownership
+package_init
+print_args
+random_module
+range_bounds
+range_for
+recursion
+selfhosted_new_features
+set_methods
+short_circuit
+statistics
+string_methods
+string_ops
+struct_basic
+threads
+threads_shared_list
+try_except
+try_return
+uncaught_exception
+uncaught_keyerror
+unicode_literal
+unwrap_op

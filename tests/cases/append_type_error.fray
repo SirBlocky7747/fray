@@ -1,0 +1,15 @@
+# A container method called on something that is not a container has to fail
+# loudly: xs[0] is an int, so `.append` is a TypeError the runtime raises.
+#
+# It used to be a segfault. The list and set appends write into a union that an
+# int's bits also fill, so appending to one read the number as a length and a
+# capacity and wrote through the pointer found there; append_type_error.exit
+# records the status a raised error gives (1), not a crash's 139.
+#
+# Nothing is printed before the failing statement: the oracle drops buffered
+# output when a program dies (see plan.md), so a case that printed first could
+# not compare equal on stdout across the engines.
+
+xs = [1, 2, 3]
+xs[0].append(4)
+print("not reached")

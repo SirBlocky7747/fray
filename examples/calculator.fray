@@ -1,0 +1,40 @@
+# calculator.fray — enums, parameterized variants and recursive match.
+enum Expr:
+    case Num(value)
+    case Add(left, right)
+    case Mul(left, right)
+    case Neg(operand)
+
+def evaluate(e):
+    match e:
+        case Expr.Num(v):
+            return v
+        case Expr.Add(l, r):
+            return evaluate(l) + evaluate(r)
+        case Expr.Mul(l, r):
+            return evaluate(l) * evaluate(r)
+        case Expr.Neg(x):
+            return 0 - evaluate(x)
+        case _:
+            return 0
+
+# (3 + 4) * -(2)
+expr = Expr.Mul(Expr.Add(Expr.Num(3), Expr.Num(4)), Expr.Neg(Expr.Num(2)))
+print(str(evaluate(expr)))
+
+# A shape interpreter with a nested match.
+enum Shape:
+    case Circle(radius)
+    case Rect(width, height)
+
+def describe(s):
+    match s:
+        case Shape.Circle(r):
+            return "circle r=" + str(r)
+        case Shape.Rect(w, h):
+            return "rect " + str(w) + "x" + str(h)
+        case _:
+            return "unknown"
+
+for s in [Shape.Circle(5), Shape.Rect(3, 4)]:
+    print(describe(s))

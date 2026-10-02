@@ -1,0 +1,54 @@
+# `print` is variadic: every argument but the last is written with a trailing
+# space and the last one closes the line, so the arguments come out separated
+# by exactly one space and the line by exactly one newline. Both emitters used
+# to lower it as a single-argument call and drop the rest — and the compiled
+# one leaked them, since only the first was released. `print()` with no
+# arguments at all is a bare newline.
+
+# Two arguments: the whole point of the change.
+print(4, 4)                    # 4 4
+
+# More than two, and mixed types. Strings print unquoted, so a separator
+# between them is the only thing distinguishing the fields.
+print("x", 1, True, [1, 2])    # x 1 True [1, 2]
+
+# The separator is one space and there is no trailing one: the last argument
+# closes the line instead.
+print("a", "b")                # a b
+print("only")                  # only
+
+# A last argument that contains spaces of its own, which proves the space
+# between fields is a separator and not part of the value.
+print("lead", "a b c")         # lead a b c
+
+# No arguments: a bare newline, not silence.
+print()
+print("after")                 # (blank line above) after
+
+# print is an expression, and still evaluates to none once it has written.
+print(print(1, 2))             # 1 2 then None
+
+# Every value kind whose repr already agrees between the runtime and the
+# evaluator. (There is no `none` literal in the language, but the none that
+# print() itself returns shows up as a field above. Maps and structs are left
+# out: their repr is a separate, pre-existing divergence — the runtime
+# renders a map as "{1 items}" — and mixing that into this case would fail
+# the gate for a reason that has nothing to do with print.)
+print(1.5, "s", True)          # 1.5 s True
+print([1, 2], [3, 4])          # [1, 2] [3, 4]
+
+# Arguments are evaluated once each, left to right, before anything is
+# written — so a call whose arguments have effects runs them in order and
+# does not repeat them.
+seen = []
+def note(v):
+    seen.append(v)
+    return v
+
+print(note("a"), note("b"), note("c"))
+print(seen)                    # ['a', 'b', 'c']
+
+# A loop, where the variadic form has to stay correct on every iteration and
+# must not accumulate state between lines.
+for i in range(3):
+    print("i =", i, "sq =", i * i)

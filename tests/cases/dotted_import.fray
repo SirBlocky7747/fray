@@ -1,0 +1,5 @@
+# tests/cases/dotted_import.fray — a dotted module path resolves into a package
+# subdirectory (`pkg/util.fray` is the module `pkg.util`).
+from pkg.util import twice
+
+print(twice(21))

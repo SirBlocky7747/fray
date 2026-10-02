@@ -1,0 +1,38 @@
+# benchmarks/io_file_coro.fray — the Phase 7 I/O claim, in one shape.
+#
+# NFILES files are read concurrently by NFILES coroutines on ONE OS thread.
+# Each readFileAsync hands the blocking syscall to the worker pool and parks
+# its fiber, so all NFILES operations are in flight at once; the event loop
+# resumes each fiber as its worker posts. No coroutine gets an OS thread.
+#
+# The runner rewrites the NFILES and DIR constants below.
+#
+# Not named `main`: a user function called `main` collides with the C entry
+# point and the emitted IR fails to verify.
+
+NFILES = 64
+DIR = "/tmp/fray_io_bench"
+
+
+async def readOne(path, ch):
+    text = readFileAsync(path)
+    send(ch, len(text))
+    return 0
+
+
+def run_all():
+    ch = channel(NFILES)
+    i = 0
+    while i < NFILES:
+        readOne(DIR + "/f" + str(i) + ".txt", ch)
+        i += 1
+    runUntilComplete()
+    total = 0
+    i = 0
+    while i < NFILES:
+        total = total + recv(ch)
+        i += 1
+    print(total)
+
+
+run_all()

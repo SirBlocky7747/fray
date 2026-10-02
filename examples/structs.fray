@@ -1,0 +1,26 @@
+# structs.fray — records with default field values.
+struct Point:
+    x = 0
+    y = 0
+
+struct Rect:
+    width = 0
+    height = 0
+
+def move(p, dx, dy):
+    p.x = p.x + dx
+    p.y = p.y + dy
+    return p
+
+def area(r):
+    return r.width * r.height
+
+p = Point(3, 4)
+print("point: " + str(p.x) + "," + str(p.y))
+
+move(p, 1, 0)
+print("moved: " + str(p.x) + "," + str(p.y))
+
+box = Rect(4, 5)
+print("area: " + str(area(box)))
+print("same point: " + str(p == Point(4, 4)))

@@ -1,0 +1,18 @@
+# Option type
+x = Some(42)
+print(isSome(x))
+print(isNone(x))
+print(unwrap(x))
+
+# isNone(null) should work
+print(isNone(null))
+
+# Result type
+r = Ok("hello")
+print(isOk(r))
+print(isErr(r))
+print(unwrap(r))
+
+err = Err("something went wrong")
+print(isOk(err))
+print(isErr(err))

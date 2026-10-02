@@ -1,0 +1,18 @@
+# sorting.fray — lists, in-place mutation and the math builtins.
+def bubble_sort(xs):
+    n = len(xs)
+    for i in range(n):
+        for j in range(n - i - 1):
+            if xs[j] > xs[j + 1]:
+                tmp = xs[j]
+                xs[j] = xs[j + 1]
+                xs[j + 1] = tmp
+    return xs
+
+xs = [64, 34, 25, 12, 22, 11, 90]
+print("unsorted: " + str(xs))
+bubble_sort(xs)
+print("sorted:   " + str(xs))
+
+print("min " + str(min(xs)) + ", max " + str(max(xs)))
+print("sum " + str(sum(xs)) + ", mean " + str(mean(xs)))

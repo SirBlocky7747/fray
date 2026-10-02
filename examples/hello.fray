@@ -1,0 +1,2 @@
+# hello.fray — the smallest fray program.
+print("Hello, fray!")

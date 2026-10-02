@@ -1,0 +1,121 @@
+# `return` inside a try body. The statement that builds the value can raise,
+# and the oracle lets the matching clause take that case instead of the return
+# happening: `return a / b` with b == 0 has to reach the `except
+# ZeroDivisionError` clause, not hand back the placeholder the failed division
+# left behind. The finally still runs, and it runs before the caller is handed
+# the value (and before the enclosing try's finally, when there is one).
+
+
+def safe_div(a, b):
+    try:
+        return a / b
+    except ZeroDivisionError:
+        return -1
+
+
+print(safe_div(6, 3))
+print(safe_div(1, 0))
+
+
+data = [10, 20, 30]
+
+
+def at(xs, i):
+    try:
+        return xs[i]
+    except IndexError:
+        return -1
+
+
+print(at(data, 1))
+print(at(data, 9))
+
+
+def kept(x):
+    try:
+        return x * 2
+    except ValueError:
+        return -1
+    finally:
+        print("finally ran")
+
+
+print(kept(5))
+
+
+# A return that has to unwind through two finally bodies before it takes
+# effect, in order.
+def deep(x):
+    try:
+        try:
+            return x + 1
+        finally:
+            print("inner finally")
+    finally:
+        print("outer finally")
+
+
+print(deep(1))
+
+
+# The inner try has no clause for it, so the exception is still pending when
+# the inner try ends and the *outer* clause takes it.
+def outer_catch(xs):
+    try:
+        try:
+            return xs[5]
+        except TypeError:
+            return -2
+    except IndexError:
+        return -3
+
+
+print(outer_catch(data))
+
+
+# The return is inside an `if`, not the last thing the statement does, so the
+# branch itself has to answer the pending exception.
+def cond_return(b):
+    try:
+        if b:
+            return 1 / 0
+        return 7
+    except ZeroDivisionError:
+        return -4
+
+
+print(cond_return(True))
+print(cond_return(False))
+
+
+# The same rule in a function the bootstrap gives an unboxed body (a
+# self-recursive one that returns a number on every path): the raw ABI has to
+# park its result and answer the pending exception the same way.
+def depth(n):
+    try:
+        if n == 0:
+            return n // 0
+        return n * depth(n - 1)
+    except ZeroDivisionError:
+        return -7
+    return 0
+
+
+print(depth(0))
+print(depth(3))
+
+
+# A `return` in a clause is the same story from the other side: the try has
+# already handled the exception, but its finally still runs before the caller
+# sees the value the clause produced.
+def fallback(x):
+    try:
+        return 10 // x
+    except ZeroDivisionError:
+        return -5
+    finally:
+        print("clause finally")
+
+
+print(fallback(2))
+print(fallback(0))

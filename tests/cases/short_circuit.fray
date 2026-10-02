@@ -1,0 +1,56 @@
+# Test and/or short-circuit evaluation
+# In compiled binaries, and/or must not evaluate the right side
+# when the left side already determines the result.
+
+# Simple and: left is false → right not evaluated
+x = 0
+if x and x:
+    print("FAIL: and should short-circuit")
+else:
+    print("PASS: and short-circuits")
+
+# Simple or: left is true → right not evaluated
+y = 1
+if y or x:
+    print("PASS: or short-circuits")
+else:
+    print("FAIL: or should short-circuit")
+
+# Chained and
+a = 1
+b = 1
+c = 0
+if a and b and c:
+    print("FAIL: chained and")
+else:
+    print("PASS: chained and")
+
+# Chained or
+if a or b or c:
+    print("PASS: chained or")
+else:
+    print("FAIL: chained or")
+
+# and in while loop condition (the main use case)
+s = "hello"
+pos = 0
+while pos < len(s) and s[pos] != "x":
+    pos = pos + 1
+print("PASS: while and loop, pos=" + str(pos))
+
+# and in for loop body
+count = 0
+for i in range(10):
+    if i > 2 and i < 7:
+        count = count + 1
+print("PASS: for with and, count=" + str(count))
+
+# Nested and/or
+val = (1 and 2) or 3
+print("PASS: nested, val=" + str(val))
+
+# or with function call (right side is a call)
+def get_val():
+    return 42
+result = 0 or get_val()
+print("PASS: or with call, result=" + str(result))

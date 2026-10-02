@@ -1,0 +1,31 @@
+# tests/selfhost/lexer_driver.fray — exercises compiler/lexer.fray end to end.
+#
+# tools/check_frontend.py --stage1 concatenates this after the module's source
+# (minus its `import` lines) so the module is one translation unit, compiles it
+# with the self-hosted compiler, runs the resulting binary and compares its
+# output with the oracle's. That makes the lexer the one module with a
+# differential check rather than just a build check: it is the only one whose
+# input can be built without another module (the parser needs lexer tokens,
+# sema and codegen need a parsed AST).
+
+clear_errors()
+tokens = tokenize("def f(x):\n    return x + 1\nprint(f(2))\n")
+print(len(tokens))
+i = 0
+while i < len(tokens):
+    print(tokens[i].tt)
+    i = i + 1
+
+# Keywords, numbers, strings, comments and indentation all go through
+# different scan paths, so a second, denser program covers them together.
+clear_errors()
+tokens2 = tokenize("# comment\nconst PI = 3.14\nfor i in range(3):\n    s = \"text\"\n    if s == \"text\" and i > 0:\n        print(s)\n")
+print(len(tokens2))
+print(len(get_errors()))
+
+# Error collection: an unterminated string must be reported, not raise.
+clear_errors()
+tokens3 = tokenize("x = \"unterminated\n")
+print(len(tokens3))
+print(len(get_errors()))
+print(get_errors()[0])

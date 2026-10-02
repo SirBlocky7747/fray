@@ -1,0 +1,11 @@
+x = Some(42)
+y = x?
+print(y)
+
+r = Ok("hello")
+s = r?
+print(s)
+
+# unwrap works directly
+print(unwrap(Some(99)))
+print(unwrap(Ok(100)))

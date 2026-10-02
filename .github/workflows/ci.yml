@@ -1,0 +1,229 @@
+name: fray CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install llvmlite
+
+      - name: Install C toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc
+
+      # The library is described by two lists — runtime/Makefile's
+      # RUNTIME_SOURCES and bootstrap/codegen.py's — and a translation unit
+      # added to one of them links in some builds and not others. This fails
+      # when a runtime/*.c is missing from either list, when a list names a
+      # file that does not exist, or when a program (a .c with main) is
+      # listed as a library unit.
+      - name: Runtime source lists agree (every translation unit is built)
+        run: python tools/check_runtime_sources.py
+
+      # runtime.h is the contract between the runtime library and everything
+      # that links against it, so it is worth only as much as it is true. This
+      # compiles the library's translation units — the same RUNTIME_SOURCES
+      # list the step above validates — reads their symbols with nm, and then
+      # fails on a non-inline fray_* declaration no unit defines (a prototype
+      # the linker can only reject at somebody's first call — thirteen had
+      # accumulated) or on a file-scope fray_* definition the header never
+      # declares (API that leaked out of its translation unit). `static`
+      # functions stay private and the header's `static inline` helpers are
+      # definitions, so both are exempt. Finally, the other end of the same
+      # contract: every runtime entry point the two emitters call has to exist
+      # in the library, and every literal call in the bootstrap has to be one
+      # its RUNTIME_FUNCS declares — a rename there is otherwise invisible
+      # until a program fails to link.
+      - name: Runtime header, runtime library and emitters agree
+        run: python tools/check_runtime_symbols.py
+
+      - name: Runtime C tests (memory management, threads, coroutines)
+        run: |
+          make -C runtime clean
+          make -C runtime test
+
+      - name: Compiler unit tests (inference)
+        run: python bootstrap/tests/test_inference.py
+
+      - name: Run test suite (oracle + compiled e2e)
+        run: python tools/run_tests.py -v
+
+      # The self-hosted compiler (compiler/*.fray) implements a subset of the
+      # language, and that subset must stay honest: it always terminates, it
+      # reports syntax it cannot compile as a diagnostic naming the stage and
+      # position, and the programs it does compile match their .expected
+      # output. The original defect this gate was built for was a parser that
+      # spun forever on `struct` fields with defaults.
+      - name: Self-hosted frontend gate (no hangs, honest diagnostics, coverage)
+        run: |
+          python tools/check_frontend.py --probes
+          python tools/check_frontend.py --run
+
+      # Stage 1 of self-hosting: the self-hosted compiler compiles its own four
+      # modules to IR that LLVM verifies, builds and runs them, and — where a
+      # driver exists in tests/selfhost/ — executes the compiled module and
+      # compares its output with the oracle's. This is the check that keeps
+      # "it compiles itself" true instead of a one-off measurement.
+      - name: Self-hosted compiler compiles itself (Stage 1)
+        run: python tools/check_frontend.py --stage1
+
+      # The compiler modules define the same top-level names (`get_errors`,
+      # `clear_errors`, `node_type`, `node_get`, and the private `errors`
+      # list), so building each one separately never proves they can coexist.
+      # compiler/main.fray imports them all, and the self-hosted compiler's
+      # linker resolves the imports and renames the collisions itself — no
+      # host-side amalgamation. This builds, links and runs that program as
+      # ONE binary and diffs its output against the oracle.
+      - name: Self-hosted compiler as one binary (native imports)
+        run: python tools/check_frontend.py --single-unit
+
+      # Module paths may be dotted: `import a.b` is a/b.fray under the program's
+      # root, and `a.b.f()` / `from a.b import c` resolve through it. This
+      # builds a two-package program whose packages share a function name, so a
+      # wrong namespace prefix would produce the wrong value.
+      - name: Package imports (dotted module paths)
+        run: python tools/check_frontend.py --packages
+
+      # The prose is a build artifact too. Both the syntax reference and the
+      # tutorial promise that their snippets work, and for a long time nothing
+      # compiled either document. The tutorial audit was written after 13 of its
+      # 45 snippets turned out not to compile, run, or print what the document
+      # said — nine of them because the tutorial described constructs the
+      # language does not have. Each audit compiles and runs every snippet with
+      # the native chain and diffs the output against the oracle, so a snippet
+      # that stops working fails the build instead of misleading a reader. A
+      # snippet that genuinely cannot work carries a record in the audit, and
+      # the record is re-checked on every run, so it cannot outlive its reason.
+      #
+      # These audits need the native driver, which no step above leaves in the
+      # tree, so build it here. Two details are load-bearing: --backend auto
+      # uses llc when it is installed and falls back to the llvmlite backend
+      # when it is not (CI installs llvmlite but not llc), and either one
+      # produces the same program; and --timeout 900 because compiling the
+      # compiler takes longer than the 120s default, so the default reports a
+      # non-termination that is really just a slow build.
+      - name: Document audits (syntax reference, tutorial, block scope)
+        run: |
+          python tools/frayc_selfhosted.py build compiler/frayc.fray \
+            -o build/frayc_driver --timeout 900
+          python tools/check_fray_txt.py
+          python tools/check_tutorial.py
+          python tools/check_scope.py
+
+      - name: Check grammar + semantics docs exist
+        run: |
+          test -f spec/grammar.md
+          test -f spec/semantics.md
+          echo "Spec docs present."
+
+  memory:
+    # Compiled programs under AddressSanitizer. The runtime owns a program's
+    # memory (refcounting, GC, threads, coroutines), so a leak there scales
+    # with the workload: a per-element leak is megabytes, a per-program leak
+    # is one box. Runs one Python version — this gate is about the runtime
+    # and the emitted code, not the toolchain matrix.
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install llvmlite
+
+      - name: Install C toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc
+
+      - name: C runtime under AddressSanitizer
+        run: make -C runtime asan
+
+      - name: Leak and memory-error check (benchmarks + golden cases)
+        run: python tools/check_memory.py --all --keep-going
+
+  benchmarks:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install llvmlite
+
+      - name: Install C toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc
+
+      - name: Run benchmarks and check for regressions
+        run: |
+          python benchmarks/run_benchmarks.py \
+            --baseline benchmarks/baseline.json
+        # The runner diffs against the committed baseline.json when present
+        # and fails on >25% slowdowns; it rewrites the file with fresh
+        # numbers only in the working copy (not committed automatically).
+
+      # Compiled-vs-CPython gate. Every benchmark now clears CPython on
+      # Linux (see plan.md Phase 5), so this is a real gate again — with a
+      # 1.25x tolerance, because runner timing is noisy and `list_sum`
+      # clears its bar by ~10-15%.
+      - name: Compiled vs CPython
+        run: |
+          python - <<'EOF'
+          import json, sys
+
+          TOLERANCE = 1.25
+          failed = False
+
+          data = json.load(open("benchmarks/baseline.json"))
+          for name, res in data.items():
+              if "error" in res:
+                  raise SystemExit(f"{name}: benchmark error: {res['error']}")
+              cpy = res.get("cpython_best")
+              if not cpy:
+                  print(f"{name}: compiled {res['compiled_best']:.3f}s (no CPython bar)")
+                  continue
+              ratio = res["compiled_best"] / cpy
+              verdict = "beats" if ratio <= 1.0 else "trails"
+              print(f"{name}: compiled {res['compiled_best']:.3f}s "
+                    f"{verdict} CPython {cpy:.3f}s ({ratio:.2f}x)")
+              if ratio > TOLERANCE:
+                  failed = True
+                  print(f"  ^ exceeds {TOLERANCE}x tolerance", file=sys.stderr)
+          if failed:
+              raise SystemExit("compiled code trails CPython beyond tolerance")
+          EOF
