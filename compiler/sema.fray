@@ -96,6 +96,7 @@ struct SemaState:
     struct_defs
     struct_defaults
     enum_defs
+    func_arities
 
 def make_sema_state(filename):
     st = SemaState()
@@ -106,6 +107,7 @@ def make_sema_state(filename):
     st.struct_defs = {}
     st.struct_defaults = {}
     st.enum_defs = {}
+    st.func_arities = {}
     return st
 
 def push_scope(st):
@@ -129,6 +131,39 @@ def resolve_name(st, name):
             return True
         i = i - 1
     return False
+
+# Whether `name` is a top-level function that nothing nearer shadows.
+#
+# resolve_name only says the name exists, and a local holding a function --
+# `g = add`, then `g(1, 2)` -- resolves just the same. Such a call is a value
+# call, and its arity belongs to whatever the value turns out to be at run
+# time, not to this program's declaration, so it must not be checked against
+# func_arities. A name bound at module level and not bound again in an inner
+# scope is the one case where the declared arity is the arity the call uses.
+def resolves_to_function(st, name):
+    i = len(st.scopes) - 1
+    while i > 0:
+        if scope_is_defined(st.scopes[i], name):
+            return False
+        i = i - 1
+    return scope_is_defined(st.scopes[0], name)
+
+# A call to a function this program declares carries the declaration's
+# argument count, so a mismatch is a compile-time error here rather than a
+# malformed LLVM module later: the emitter writes the call from the call site
+# and LLVM then refuses the whole module with a type error that names neither
+# the function nor the count. The message is the oracle's.
+#
+# This is its own function rather than inline in check_expr's CALL branch.
+# That branch is already several levels deep inside the largest function in
+# the compiler, and the diagnostic builds a long concatenation; keeping it
+# out of check_expr keeps the added code a single call at the call site.
+def check_call_arity(st, fn_name, args, fn):
+    if resolves_to_function(st, fn_name):
+        if fn_name in st.func_arities:
+            arity = st.func_arities[fn_name]
+            if arity != len(args):
+                sema_error("'" + fn_name + "' takes " + str(arity) + " argument(s) but " + str(len(args)) + " given", node_line(fn), node_col(fn))
 
 def is_const_name(st, name):
     i = len(st.scopes) - 1
@@ -337,6 +372,7 @@ def check_expr(st, node):
             return "?"
         # Check function defined in this program
         if fn_name != "" and resolve_name(st, fn_name):
+            check_call_arity(st, fn_name, node["args"], fn)
             i = 0
             while i < len(node["args"]):
                 check_expr(st, node["args"][i])
@@ -609,10 +645,25 @@ def check_statement(st, node):
 
 # ─── Main entry point ───
 
+def collect_arities(program, st):
+    # Record every top-level function's parameter count before any body is
+    # checked. A function may call one defined later in the file — that is
+    # legal, and the compiler's own modules rely on it — so a count looked up
+    # while walking the body would be missing for exactly the calls a reader
+    # most wants checked. Collecting first is what lets the call site compare
+    # a count instead of skipping the check.
+    i = 0
+    while i < len(program["body"]):
+        node = program["body"][i]
+        if node_type(node) == "FUNCTION_DEF":
+            st.func_arities[node["name"]] = len(node["params"])
+        i = i + 1
+
 def analyze(program, filename):
     while len(errors) > 0:
         errors.depend()
     st = make_sema_state(filename)
+    collect_arities(program, st)
     push_scope(st)
     i = 0
     while i < len(BUILTINS):

@@ -3685,6 +3685,16 @@ class CodeGen:
         if func_name and func_name in self.module.globals:
             fn = self.module.globals[func_name]
             if isinstance(fn, ir.Function):
+                # The LLVM function's signature is the declared arity, for
+                # imported functions too (they are pre-declared on import).
+                # This runs BEFORE the unboxed fast path below, not after it:
+                # _raw_call builds a wrapper that reads the arguments it is
+                # given out of a list, so a wrong count did not reach LLVM as a
+                # module error there — it bound fewer parameters than the
+                # function declared and the program then ran on a wrong
+                # answer. `power(2)` for a two-parameter power printed 1.
+                self._check_arity(func_name, len(fn.function_type.args),
+                                  len(node.args), node.line, node.col)
                 # Unboxed call: skips boxing the arguments and unboxing
                 # them at entry. The result comes back raw and is boxed
                 # here, so the value this returns is still owned.
@@ -3693,10 +3703,6 @@ class CodeGen:
                     if raw is not None:
                         return (self._box_int(raw) if kind == "int"
                                 else self._box_float(raw))
-                # The LLVM function's signature is the declared arity, for
-                # imported functions too (they are pre-declared on import).
-                self._check_arity(func_name, len(fn.function_type.args),
-                                  len(node.args), node.line, node.col)
                 args = [self._gen_expr(a) for a in node.args]
                 if not self.builder.block.is_terminated:
                     return self.builder.call(fn, args)

@@ -1214,8 +1214,8 @@ documentation was only the messenger for.
   LLVM then rejects the module with `'@power' defined with type 'i8* (i8*, i8*)*' but
   expected 'i8* (i8*)*'` — a diagnostic that names no fray source, no line and no cause.
   The tutorial's "Default parameters (using if/else)" section was built on exactly this
-  and never worked; it is rewritten, and **the arity check itself is still open** — it needs
-  parameter counts threaded through sema's scope, which is a feature, not a patch.
+  and never worked; it is rewritten, and **the arity check itself is now implemented** —
+  see "The compiler checks call arity" below.
 * **The tutorial taught shadowing a builtin as if it were ordinary.** Four sections assign
   `pi` or `e`, which are language constants, and the driver rejects them with
   `SemanticError: invalid assignment target` — as it should. Renamed, with a note saying why
@@ -1256,6 +1256,75 @@ Two engine gaps fell out of making the harness reusable and are now available to
 document: `Snippet.files` (companion sources in the work directory) and a summary line that
 reports how many snippets were diffed against the oracle versus run with their output pinned
 — the two are different claims and the report used to conflate them.
+
+### The compiler checks call arity
+
+The open item above is closed. `power(2)` for a two-parameter `power` is now
+`SEMA ERROR: file:7:7: 'power' takes 2 argument(s) but 1 given` from the self-hosted
+front end — the oracle's message and the oracle's `FrayTypeError` wording — instead of a
+malformed LLVM module.
+
+Two things had to be true for the check to be safe rather than merely present.
+
+**Arities are collected before any body is checked.** A function may call one defined
+*later* in the file; that is legal, and the compiler's own modules lean on it. Recording
+each function's parameter count as its body was walked would leave the count missing for
+exactly the calls a reader most wants checked, and a lookup that found nothing would
+either skip silently or crash. `collect_arities` walks the top-level body once to fill
+`st.func_arities`, and the call site reads from it. `forward_call_arity_ok` is a probe
+precisely because the pre-pass is the part that could regress into a false rejection.
+
+**A name that is not a top-level function is not checked.** `resolve_name` only reports
+that a name resolves, so a local holding a function — `g = add`, then `g(1, 2)` — looks
+identical to a direct call. It is not: that call's arity belongs to whatever the value is
+at run time, and the runtime's `fray_call` already reports that. `resolves_to_function`
+requires a module-level binding with no nearer one shadowing it.
+
+The bootstrap had the same gap with a *worse* symptom, and it is worth recording why,
+because it is not the failure the open item described. `codegen.py` already called
+`_check_arity` — but it called it *after* the unboxed fast path, and `_raw_call` returns
+first. `_raw_call` builds a wrapper that reads whatever arguments it is given out of a
+list, so a wrong count never reached LLVM as a module error there: it bound fewer
+parameters than were declared and **the program ran and printed a wrong answer**.
+`power(2)` printed `1`, because the missing `exponent` left the loop empty. A wrong answer
+is worse than a rejected module, and a rejected module is worse than a diagnostic; the
+check now runs before the fast path, so all three agree.
+
+`call_too_few_args`, `call_too_many_args` and `forward_call_arity_ok` are probes, so the
+rejection, the rejection in the other direction, and the forward reference that must keep
+working are all re-checked on every run.
+
+#### What writing it exposed: a latent codegen bug
+
+The first version of this change passed the oracle, the probes and 49/49 golden cases, and
+**broke the self-build**. `stage2` failed twice with LLVM IR that had been corrupted in
+transit — `bitcaSt` for `bitcast`, `cahl` for `call`, at a different offset each run. The
+diagnostic names no source line and no cause, which is exactly the signature of a use-after-
+free or a buffer overwritten during emission rather than of anything in the check.
+
+Isolating it took four runs of `stage2`, because the obvious suspect was wrong. The
+suspicion fell on the `--backend llvmlite` driver used for the self-build, and the matrix
+says otherwise:
+
+| source | object backend | stage2 |
+|---|---|---|
+| unmodified | `llc` (the shipped driver) | pass |
+| unmodified | `llvmlite` | pass |
+| with the check | `llvmlite` | **fail, 2 of 2** |
+
+So the change was the cause — and the change is not semantically wrong. Extracting each
+construct into a small standalone program and validating the emitted IR found all of them
+correct, so the trigger is not *what* the new code computes but *where it sits*: it was
+inline in `check_expr`'s CALL branch, already several levels deep inside the largest
+function in the compiler. Hoisting the check into `check_call_arity` — leaving one call at
+the call site — makes `stage2` pass again, fixed point intact and 49/49.
+
+That is the same class of defect `check_frontend.py --probes` was built for, and it is
+recorded here rather than quietly worked around: **fray's code generator has a latent
+memory bug that corrupts emitted IR under enough nesting in one function.** The arity check
+is not the disease. It is the thing that made the illness visible, and the honest response
+is to keep the diagnosis and file the bug, not to reshape the fix until it stops
+reproducing. The `stage2` gate caught it; nothing else in the suite would have.
 
 ### Phase 9 — First downloadable release (v0.1)
 - [x] Release packaging per OS: single executable + stdlib + docs (installer or tarball) —

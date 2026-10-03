@@ -353,6 +353,35 @@ x = 1
     "bare_expr_line": """
 ]
 """,
+    # A call whose argument count disagrees with the declaration. These used to
+    # reach the emitter, which wrote the call from the call site and left LLVM
+    # to reject the whole module with a type error naming neither the function
+    # nor the count — or, on the unboxed fast path, bound fewer parameters than
+    # were declared and ran on a wrong answer instead. sema now reports the
+    # oracle's message. The third probe is the other half of the change: a call
+    # to a function defined LATER in the file is legal, so collecting arities
+    # must happen before bodies are checked rather than during.
+    "call_too_few_args": """
+def power(base, exponent):
+    return base * exponent
+
+print(power(2))
+""",
+    "call_too_many_args": """
+def power(base, exponent):
+    return base * exponent
+
+print(power(2, 3, 4))
+""",
+    "forward_call_arity_ok": """
+def caller():
+    return helper(1, 2)
+
+def helper(a, b):
+    return a + b
+
+print(caller())
+""",
 }
 
 
