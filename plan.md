@@ -1297,34 +1297,64 @@ working are all re-checked on every run.
 #### What writing it exposed: a latent codegen bug
 
 The first version of this change passed the oracle, the probes and 49/49 golden cases, and
-**broke the self-build**. `stage2` failed twice with LLVM IR that had been corrupted in
-transit — `bitcaSt` for `bitcast`, `cahl` for `call`, at a different offset each run. The
-diagnostic names no source line and no cause, which is exactly the signature of a use-after-
-free or a buffer overwritten during emission rather than of anything in the check.
+**broke the self-build**. `stage2` failed with LLVM IR that had been corrupted in transit —
+`bitcaSt` for `bitcast`, `cahl` for `call`, at a different offset each run. The diagnostic
+names no source line and no cause, which is the signature of a use-after-free or a buffer
+overwritten during emission rather than of anything in the check.
 
-Isolating it took four runs of `stage2`, because the obvious suspect was wrong. The
-suspicion fell on the `--backend llvmlite` driver used for the self-build, and the matrix
-says otherwise:
+**The first conclusion drawn here was wrong, and the correction matters.** The obvious
+suspect was the `--backend llvmlite` driver used for the self-build, so the matrix was run:
 
 | source | object backend | stage2 |
 |---|---|---|
 | unmodified | `llc` (the shipped driver) | pass |
 | unmodified | `llvmlite` | pass |
-| with the check | `llvmlite` | **fail, 2 of 2** |
+| with the check, inline in `check_expr` | `llvmlite` | fail, 2 of 2 |
 
-So the change was the cause — and the change is not semantically wrong. Extracting each
-construct into a small standalone program and validating the emitted IR found all of them
-correct, so the trigger is not *what* the new code computes but *where it sits*: it was
-inline in `check_expr`'s CALL branch, already several levels deep inside the largest
-function in the compiler. Hoisting the check into `check_call_arity` — leaving one call at
-the call site — makes `stage2` pass again, fixed point intact and 49/49.
+That looked conclusive, so the check was hoisted into `check_call_arity`, on the theory that
+nesting it inside `check_expr` — the compiler's largest function — was the trigger. **`stage2`
+then passed, which was read as the fix. It was not.** Re-running the *inline* version
+afterwards, unchanged, with the same driver and the same tree, it passes too. The
+inline-versus-hoisted distinction was correlation drawn from three failures that the bug
+happened to arrive with. The corruption is intermittent and its cause is still unidentified;
+hoisting was a change that happened to land between failures, not a repair. It is kept
+because a one-line call at the call site is the better shape anyway, not because it fixes
+anything.
 
-That is the same class of defect `check_frontend.py --probes` was built for, and it is
-recorded here rather than quietly worked around: **fray's code generator has a latent
-memory bug that corrupts emitted IR under enough nesting in one function.** The arity check
-is not the disease. It is the thing that made the illness visible, and the honest response
-is to keep the diagnosis and file the bug, not to reshape the fix until it stops
-reproducing. The `stage2` gate caught it; nothing else in the suite would have.
+What *is* solid: a later diff of two drivers over identical source caught a concrete
+instance — `br i1 %659, label %if_then_4217, nabel %if_else_4218`, one character of a string
+literal wrong in the emitted text. Same shape as the original failures (a single character
+substituted, no structural damage), which is why a parse error is the only symptom.
+
+Ruled out along the way, each by constructing it directly and validating the IR or running
+under AddressSanitizer: the unboxed fast path, list-element reads under allocation churn,
+long concatenation chains with intermediates alive in a list, the O(n²) assembly loop on its
+own, and an ASan build of the driver itself (clean, three runs). The one structural clue is
+that `objects.c` pools and *recycles* freed leaf values — so a use-after-free here returns a
+plausible object with the wrong contents instead of crashing, and a single substituted
+character is exactly what a recycled slot looks like. That is a lead, not a diagnosis.
+
+**The defect is still open.** It is the same class `check_frontend.py --probes` was built
+for, and it is recorded rather than worked around: `stage2` validates every IR with LLVM and
+caught this; nothing else in the suite would have.
+
+#### The O(n²) IR assembly, fixed
+
+Chasing this did turn up a real, provable defect next door. The module text was assembled by
+concatenating into one accumulator:
+
+    result = result + b.lines[i] + "\n"
+
+Each iteration copies everything accumulated so far, so N lines cost O(N²) bytes copied.
+`frayc.fray` emits ~5.5 MB of IR, and the driver took **253 seconds** to compile it. The
+lines are now folded pairwise — a balanced merge tree, O(N log N) — and the same driver
+compiles the same source in **2 seconds**, a 126x reduction, with byte-identical output.
+(Verified by diffing the old and new drivers' IR over the same tree, since `stage2`'s fixed
+point compares a compiler against itself and would not notice a changed output.)
+
+That is a performance fix, not a cure: it removes most of the alloc/free churn this workload
+creates, which is where the corruption is most likely to live, but it is not a root cause and
+is not claimed to be one.
 
 ### Phase 9 — First downloadable release (v0.1)
 - [x] Release packaging per OS: single executable + stdlib + docs (installer or tarball) —
