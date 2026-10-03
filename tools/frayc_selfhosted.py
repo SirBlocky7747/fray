@@ -3,7 +3,7 @@
 frayc-selfhosted — Self-hosted compiler driver.
 
 Runs the self-hosted lexer→parser→link→sema→codegen pipeline through the
-oracle, then feeds the resulting LLVM IR to the Python LLVM backend for native
+oracle, then feeds the resulting LLVM IR to LLVM's own `llc` for native
 compilation. `link` resolves the program's `import`s against a module catalog
 the host builds from the source's directory and the compiler's own directory.
 
@@ -267,28 +267,6 @@ def compile_to_ir_selfhosted(source: str, filename: str = "<string>",
     return ir_text
 
 
-def _patch_host_target(ir_text: str) -> str:
-    """Rewrite the module triple/data layout lines for the host.
-
-    The self-hosted fray compiler currently hardcodes the Windows/MSVC
-    target; the driver retargets the IR so object emission matches the
-    machine it runs on (Linux/Windows/macOS)."""
-    triple_line = f'target triple = "{target.host_triple()}"'
-    lines = ir_text.splitlines()
-    out = []
-    for line in lines:
-        if line.startswith("target triple ="):
-            out.append(triple_line)
-        elif line.startswith("target datalayout ="):
-            layout = target.host_data_layout()
-            if layout:
-                out.append(f'target datalayout = "{layout}"')
-            # else: drop the line — LLVM derives the default from the triple
-        else:
-            out.append(line)
-    return "\n".join(out) + "\n"
-
-
 def _normalize_ir(ir_text: str) -> str:
     """Strip target triple/datalayout lines so IR comparisons (diff mode)
     stay meaningful across compilers that target different hosts."""
@@ -299,36 +277,24 @@ def _normalize_ir(ir_text: str) -> str:
     )
 
 
-def compile_to_object(ir_text: str, output_path: str):
-    """Compile LLVM IR text to an object file using the Python LLVM backend."""
-    from llvmlite import binding
 
-    binding.initialize_all_targets()
-    binding.initialize_all_asmprinters()
-
-    ir_text = _patch_host_target(ir_text)
-    mod = binding.parse_assembly(ir_text)
-    mod.verify()
-
-    tgt = binding.Target.from_triple(target.host_triple())
-    machine = tgt.create_target_machine(opt=2, codemodel="small")
-    obj_data = machine.emit_object(mod)
-
-    with open(output_path, "wb") as f:
-        f.write(obj_data)
 
 
 def find_llc():
     """Path to LLVM's `llc`, or None when it is not installed.
 
-    `llc` is the backend the release chain uses, in place of the llvmlite
-    binding: the frontend is already a native binary (compiler/frayc.fray),
-    and going IR → object with LLVM's own tool keeps Python out of the compile
-    loop entirely (frayc → llc → cc → binary). It is also strict about the IR
-    text — every function's unnamed temporaries must start at %0 — so it
-    double-checks what the frontend emits.
+    `llc` is the backend the release chain uses: the frontend is already a
+    native binary (compiler/frayc.fray), and going IR → object with LLVM's own
+    tool keeps Python out of the compile loop entirely (frayc → llc → cc →
+    binary). It is also strict about the IR text — every function's unnamed
+    temporaries must start at %0 — so it double-checks what the frontend emits.
+
+    Newest first, then the unversioned name. Distribution packages are
+    versioned (`llc-22`), and a machine can carry several at once, so the order
+    is a choice rather than an accident: newest first, so a box with both
+    LLVM 14 and a current LLVM uses the current one.
     """
-    for name in ("llc", "llc-18", "llc-17", "llc-16", "llc-15", "llc-14"):
+    for name in tuple(f"llc-{major}" for major in range(22, 13, -1)) + ("llc",):
         path = shutil.which(name)
         if path:
             return path
@@ -385,43 +351,45 @@ def link_object(obj_path: str, output_path: str, runtime_dir: str = None):
 
 def compile_ir_file(ir_path: str, output_path: str, runtime_dir: str = None,
                     backend: str = "auto") -> str:
-    """Emit an object from an IR *file* and link it. Returns the backend used.
+    """Emit an object from an IR *file* with `llc` and link it.
 
     The IR arrives as a file (the native driver prints it between markers) and
     stays one all the way to `llc`: nothing parses it on the host side. Note
     that llc records the input file name in the object, so two builds compare
     byte-for-byte only when they are given the same `ir_path`.
+
+    `backend` is accepted and ignored. It used to choose between `llc` and a
+    llvmlite fallback, and the fallback was a liability rather than a safety
+    net: it is a second, different LLVM, so when `llc` rejected the frontend's
+    IR the build quietly re-checked it against something more lenient and went
+    green. That is how four cases with unnumbered temporaries and one with a
+    constant-array type mismatch passed a gate the native chain could not
+    build. There is one emitter now, it is LLVM's, and its verdict is final.
     """
-    llc = find_llc() if backend in ("auto", "llc") else None
+    del backend
+    llc = find_llc()
+    if not llc:
+        raise RuntimeError(
+            "llc not found — LLVM is required to emit objects. Install LLVM "
+            "(e.g. `apt-get install llvm-22`) and retry.")
     with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as tmp:
         obj_path = tmp.name
     try:
-        used = None
-        if llc:
-            result = subprocess.run([llc, "-filetype=obj", ir_path, "-o", obj_path],
-                                    capture_output=True, text=True)
-            if result.returncode == 0:
-                used = "llc"
-            elif backend == "llc":
-                print(f"llc error:\n{result.stderr}", file=sys.stderr)
-                raise RuntimeError("llc failed to emit an object")
-            else:
-                print(f"  llc rejected the IR ({result.stderr.strip().splitlines()[-1] if result.stderr.strip() else 'no output'}); "
-                      "falling back to llvmlite", file=sys.stderr)
-        if used is None:
-            if backend == "llc":
-                raise RuntimeError("llc is not installed — cannot use the native backend")
-            with open(ir_path, "r") as f:
-                compile_to_object(f.read(), obj_path)
-            used = "llvmlite"
-        print("  Generated object file" + (f" ({used})" if used != "llvmlite" else ""),
-              file=sys.stderr)
+        result = subprocess.run([llc, "-filetype=obj", ir_path, "-o", obj_path],
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"llc error:\n{result.stderr}", file=sys.stderr)
+            raise RuntimeError(
+                f"llc failed to emit an object from {ir_path} "
+                f"(exit {result.returncode})")
+        print(f"  Generated object file (llc)", file=sys.stderr)
         link_object(obj_path, output_path, runtime_dir)
         print(f"  Linked {output_path}", file=sys.stderr)
-        return used
+        return "llc"
     finally:
         if os.path.exists(obj_path):
             os.remove(obj_path)
+
 
 
 def compile_program(source_path: str, output_path: str, runtime_dir: str = None,
@@ -564,14 +532,15 @@ def main():
     ir_parser.add_argument("source", help="Source file (.fray)")
     ir_parser.add_argument("--timeout", type=float, default=120.0, help=timeout_help)
 
-    # Backend choice: llc (native, no Python) or llvmlite (Stage 0's binding),
-    # or auto — llc when it is installed.
-    backend_help = ("object backend: 'auto' (llc when installed), 'llc' "
-                    "(LLVM's own emitter, no Python) or 'llvmlite'")
+    # Objects come from LLVM's `llc` and nothing else. The flag survives as a
+    # no-op so existing invocations (the gates, the docs) keep working; there
+    # is no longer a second backend for it to select.
+    backend_help = ("accepted and ignored: objects are always emitted by "
+                    "LLVM's `llc`")
     for sub in (build_parser, run_parser):
-        sub.add_argument("--backend", choices=("auto", "llc", "llvmlite"),
+        sub.add_argument("--backend", choices=("auto", "llc"),
                          default="auto", help=backend_help)
-    parser.add_argument("--backend", choices=("auto", "llc", "llvmlite"),
+    parser.add_argument("--backend", choices=("auto", "llc"),
                         default="auto", help=backend_help)
 
     # Host-side half of the native-driver contract: the driver prints the IR

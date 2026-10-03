@@ -88,9 +88,7 @@ def default_driver():
     return REPO_ROOT / "build" / "frayc_driver"
 
 sys.path.insert(0, str(TOOLS_DIR))
-from run_tests import _find_python_with_llvmlite  # noqa: E402
-
-PYTHON = _find_python_with_llvmlite()
+PYTHON = sys.executable
 # A rejection must name its stage, never crash the compiler.
 DIAG_RE = re.compile(r"^(LEX|PARSE|SEMA|CODEGEN|LINK) ERROR: ")
 # Two representations the oracle and the driver cannot be expected to agree on

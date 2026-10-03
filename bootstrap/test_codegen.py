@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Test fray codegen — generates LLVM IR and verifies it parses/validates.
-Does NOT require a C compiler (JIT optional).
+Test fray codegen — generates LLVM IR and verifies LLVM itself accepts it.
+
+The IR is handed to `llc`, the same emitter the release chain uses, so "does
+this parse" has exactly one answer rather than one per LLVM binding in the
+tree. Requires `llc` on PATH; does not require a C compiler.
 """
 
 import sys
 import os
+import subprocess
+import tempfile
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from llvmlite import binding
-from codegen import compile_to_ir
-
-# Initialize LLVM targets
-binding.initialize_all_targets()
-binding.initialize_all_asmprinters()
+from codegen import compile_to_ir, find_llc
 
 
 SNIPPETS = {
@@ -63,6 +63,26 @@ else:
 }
 
 
+def verify_with_llc(ir_text):
+    """Return None when LLVM accepts the IR, else the first error line."""
+    llc = find_llc()
+    if not llc:
+        return "no `llc` found: install LLVM to run these tests"
+    with tempfile.TemporaryDirectory(prefix="fray_test_") as td:
+        ir_path = os.path.join(td, "module.ll")
+        obj_path = os.path.join(td, "module.o")
+        with open(ir_path, "w") as f:
+            f.write(ir_text)
+        result = subprocess.run([llc, "-filetype=obj", ir_path, "-o", obj_path],
+                                capture_output=True, text=True)
+        if result.returncode == 0:
+            return None
+        for line in result.stderr.splitlines():
+            if "error:" in line:
+                return line.strip()
+        return result.stderr.strip()[-200:] or "llc failed"
+
+
 def test_codegen():
     """Test IR generation for all snippets."""
     print("=== Codegen IR tests ===")
@@ -71,11 +91,13 @@ def test_codegen():
     for name, code in SNIPPETS.items():
         try:
             ir_text = compile_to_ir(code, f"{name}.fray")
-            # Verify the IR parses
-            mod = binding.parse_assembly(ir_text)
-            mod.verify()
-            print(f"  PASS  {name} ({len(ir_text)} chars IR)")
-            passed += 1
+            problem = verify_with_llc(ir_text)
+            if problem:
+                print(f"  FAIL  {name}: {problem}")
+                failed += 1
+            else:
+                print(f"  PASS  {name} ({len(ir_text)} chars IR)")
+                passed += 1
         except Exception as e:
             print(f"  FAIL  {name}: {type(e).__name__}: {e}")
             failed += 1
@@ -83,29 +105,8 @@ def test_codegen():
     return failed == 0
 
 
-def test_jit():
-    """Test JIT execution (requires LLVM targets registered)."""
-    print("=== JIT execution tests ===")
-    passed = 0
-    failed = 0
-
-    from codegen import run_ir_jit
-
-    for name, code in SNIPPETS.items():
-        try:
-            ir_text = compile_to_ir(code, f"{name}.fray")
-            result = run_ir_jit(ir_text)
-            print(f"  PASS  {name} (exit={result})")
-            passed += 1
-        except Exception as e:
-            print(f"  SKIP  {name}: {type(e).__name__}: {e}")
-    print(f"\nJIT: {passed} passed, {failed} failed\n")
-    return True  # JIT is optional
-
-
 def main():
     ir_ok = test_codegen()
-    test_jit()  # optional
 
     if ir_ok:
         print("All IR generation tests passed!")

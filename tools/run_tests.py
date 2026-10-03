@@ -40,52 +40,12 @@ sys.path.insert(0, str(BOOTSTRAP_DIR))
 
 import target  # platform detection (bootstrap/target.py)
 
-
-def _find_python_with_llvmlite():
-    """Find a Python executable that has llvmlite installed.
-    Falls back to sys.executable if none found."""
-    # First check if current python already has it
-    try:
-        import llvmlite  # noqa: F401
-        return sys.executable
-    except ImportError:
-        pass
-    # Try common Python locations
-    import shutil
-    import os
-    candidates = []
-    # Check conda installs
-    home = Path.home()
-    for conda_dir in [home / "miniconda3", home / "anaconda3"]:
-        if os.name == "nt":
-            candidates.append(conda_dir / "python.exe")
-        else:
-            candidates.append(conda_dir / "bin" / "python3")
-    # Check PATH for python3
-    which = shutil.which("python3")
-    if which:
-        candidates.append(Path(which))
-    which = shutil.which("python3.11")
-    if which:
-        candidates.append(Path(which))
-    which = shutil.which("python3.12")
-    if which:
-        candidates.append(Path(which))
-    which = shutil.which("python3.13")
-    if which:
-        candidates.append(Path(which))
-    for py in candidates:
-        if py.exists():
-            r = subprocess.run(
-                [str(py), "-c", "import llvmlite"],
-                capture_output=True, timeout=10,
-            )
-            if r.returncode == 0:
-                return str(py)
-    return sys.executable
-
-
-_PYTHON = _find_python_with_llvmlite()
+# One interpreter for the whole run. This used to be discovered by hunting
+# the PATH for a Python with llvmlite installed, because the frontend needed
+# that binding to emit objects; it emits them with `llc` now, so there is
+# nothing to discover — the gate drives this process, so its own interpreter
+# is the right one to hand to the oracle and the compiler driver.
+_PYTHON = sys.executable
 
 
 def find_test_cases():

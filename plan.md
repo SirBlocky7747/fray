@@ -1356,6 +1356,66 @@ That is a performance fix, not a cure: it removes most of the alloc/free churn t
 creates, which is where the corruption is most likely to live, but it is not a root cause and
 is not claimed to be one.
 
+### llvmlite removed from everything but one file
+
+The question was whether llvmlite could carry this project, and the answer turned out to be
+that it was barely carrying it at all. Its IR builder (`llvmlite.ir`) appeared in exactly one
+file, `bootstrap/codegen.py`, and only to build the IR for the *first* native compiler — the
+self-hosted compiler already emits IR as text. Its LLVM binding (`llvmlite.binding`) amounted
+to about eleven operations across four files. The release chain, `frayc_driver` → `llc` → `cc`,
+never touched either. So llvmlite was not the dependency holding the project up; it was a
+leftover on the way to something the release path already did without it.
+
+What *was* a real problem was a fallback nobody was watching. `compile_ir_file` in
+`tools/frayc_selfhosted.py` treated `--backend auto` as "try `llc`, and if it rejects the IR,
+retry with llvmlite" — and llvmlite bundles a different LLVM, one more lenient about IR it
+dislikes. That is how four cases with unnumbered temporaries and one with a constant-array
+type mismatch passed a gate the native chain could not build: the fallback did not recover the
+program, it substituted a different compiler for the check. `auto` now means `llc`, strictly;
+a rejected IR fails the build.
+
+CI never installed LLVM at all, so `auto` there always took the fallback, which meant the
+stage2 fixed-point byte-identity check degraded from a FAIL to a `note` — the one assertion
+that compares two builds of the compiler *as binaries* rather than as IR text. And `--stage2`
+was not in the workflow to begin with: the `test` job ran `--probes`, `--run`, `--stage1`,
+`--single-unit` and `--packages`, so the release criterion was never checked in CI regardless
+of which backend was installed. Both are fixed — LLVM 22 from apt.llvm.org, and the missing
+`--stage2` step.
+
+Choosing LLVM 22 also retired a hazard worth recording. llvmlite decides typed-vs-opaque
+pointers from `LLVMLITE_ENABLE_IR_LAYER_TYPED_POINTERS` (default on), and the whole project's
+compatibility with its own emitter rested on that environment variable: with it on, the
+bootstrap emits `i8*` and `llc-14` compiles it; with it off, it emits `ptr` and `llc-14` fails
+with `error: expected type`. Nothing in the repo asserted it. LLVM 22 accepts *both* dialects,
+so the flag stopped being load-bearing the moment the emitter moved forward — verified by
+compiling both forms. That is the version-skew argument resolving itself rather than being
+documented around.
+
+Removed: the MCJIT (`run_ir_jit`, its runtime shim, its test — compiled programs ran as
+binaries, so the JIT only ever had one non-gate caller), `_find_python_with_llvmlite`,
+`verify_ir`, the `--backend llvmlite` choice, the dead `_patch_host_target`, and the `binding`
+import itself. CI now installs `llvm-22` for the `test` and `memory` jobs.
+
+#### What writing it exposed
+
+Removing the import broke four gates at once, with a bare `ModuleNotFoundError: No module named
+'target'`. `check_frontend.py` had been getting `bootstrap/` onto `sys.path` as a *side effect*
+of importing `run_tests`, and that import existed only to reach
+`_find_python_with_llvmlite`. Deleting the helper deleted the path entry with it — a hidden
+coupling that would have broken any future import removal the same way. It is now an explicit,
+commented `sys.path.insert`. Separately, deleting `_find_python_with_llvmlite` by line range
+also clipped the `_PYTHON` assignment that the oracle path depends on, giving 92 failures from
+an undefined name; both are fixed and the suite is green.
+
+#### What is left
+
+`bootstrap/codegen.py` still imports `llvmlite.ir` — 355 `ir.*` references across 36 builder
+methods. Nothing else in the tree does. Replacing it means a text emitter for LLVM IR in
+Python, which `compiler/codegen.fray` already models in fray; it is the last step, not a small
+one, and it is not done. The docs describe llvmlite as required by that one file and on its way
+out rather than pretending otherwise, and the CI install line carries a comment saying what
+breaks if it is removed before the port lands.
+
 ### Phase 9 — First downloadable release (v0.1)
 - [x] Release packaging per OS: single executable + stdlib + docs (installer or tarball) —
       `tools/package_release.sh` builds `dist/fray-<version>-<platform>.{tar.gz,zip}` out of

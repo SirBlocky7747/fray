@@ -21,15 +21,38 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # llvmlite is still installed, and only bootstrap/codegen.py needs it: it
+      # builds the first native compiler's IR through llvmlite's IR builder.
+      # Everything else — the release chain, the driver, the gates — emits
+      # objects with `llc` now, and llvmlite's LLVM *binding* is gone from the
+      # tree entirely. This line goes away when that builder becomes text
+      # emission; until then, dropping it breaks Stage 1 outright, because the
+      # import is at module scope and the v1 build needs it.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install llvmlite
 
-      - name: Install C toolchain
+      # The release chain turns IR into objects with LLVM's own `llc`, so CI
+      # installs it too. Without llc, `--backend auto` silently uses the
+      # llvmlite backend instead and the suite stops testing the emitter that
+      # actually ships: the stage2 fixed-point byte-identity check degrades to a
+      # note whenever llvmlite, not llc, produced the objects. llvm-22 comes
+      # from apt.llvm.org (Ubuntu's own repositories stop well short of it) and
+      # is the same major version llvmlite bundles, so the bootstrap and the
+      # emitter agree on the pointer dialect instead of meeting across a gap.
+      - name: Install C toolchain and LLVM
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc
+          sudo apt-get install -y gcc wget gnupg
+          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-22 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-22.list
+          sudo apt-get update
+          sudo apt-get install -y llvm-22
+          llc-22 --version | head -1
 
       # The library is described by two lists — runtime/Makefile's
       # RUNTIME_SOURCES and bootstrap/codegen.py's — and a translation unit
@@ -97,6 +120,18 @@ jobs:
       - name: Self-hosted compiler as one binary (native imports)
         run: python tools/check_frontend.py --single-unit
 
+      # Stage 2 is where the release criterion actually lives: the compiler
+      # compiles itself, and the two builds must agree twice — on the IR they
+      # emit for frayc.fray, and on the binaries those IRs become. The second
+      # comparison is the one that needs `llc`: when the llvmlite backend emits
+      # the objects instead, the binaries are not comparable byte-for-byte and
+      # the check degrades to a note. So this step is only worth running
+      # because of the LLVM install above — and it was missing here entirely,
+      # which meant CI asserted the fixed point on IR alone while the release
+      # chain's own output went uncompared.
+      - name: Self-hosted compiler rebuilds itself (Stage 2 fixed point)
+        run: python tools/check_frontend.py --stage2
+
       # Module paths may be dotted: `import a.b` is a/b.fray under the program's
       # root, and `a.b.f()` / `from a.b import c` resolve through it. This
       # builds a two-package program whose packages share a function name, so a
@@ -116,12 +151,14 @@ jobs:
       # the record is re-checked on every run, so it cannot outlive its reason.
       #
       # These audits need the native driver, which no step above leaves in the
-      # tree, so build it here. Two details are load-bearing: --backend auto
-      # uses llc when it is installed and falls back to the llvmlite backend
-      # when it is not (CI installs llvmlite but not llc), and either one
-      # produces the same program; and --timeout 900 because compiling the
-      # compiler takes longer than the 120s default, so the default reports a
-      # non-termination that is really just a slow build.
+      # tree, so build it here. Two details are load-bearing. The first is
+      # --timeout 900: compiling the compiler takes longer than the 120s
+      # default, so the default reports a non-termination that is really just
+      # a slow build. The second is the backend, which is `llc` (installed
+      # above) rather than the llvmlite fallback this step used to take.
+      # `--backend auto` is strict now — IR that llc rejects fails the step
+      # instead of being quietly re-checked against a different LLVM, which is
+      # a different answer to the question rather than the same one.
       - name: Document audits (syntax reference, tutorial, block scope)
         run: |
           python tools/frayc_selfhosted.py build compiler/frayc.fray \
@@ -157,10 +194,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install llvmlite
 
-      - name: Install C toolchain
+      # Same LLVM as the test job, and for the same reason: this gate compiles
+      # through the host driver, so with only the llvmlite backend available it
+      # would measure emitted code from a compiler the release never ships.
+      - name: Install C toolchain and LLVM
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc
+          sudo apt-get install -y gcc wget gnupg
+          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-22 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-22.list
+          sudo apt-get update
+          sudo apt-get install -y llvm-22
+          llc-22 --version | head -1
 
       - name: C runtime under AddressSanitizer
         run: make -C runtime asan

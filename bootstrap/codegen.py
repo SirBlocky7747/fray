@@ -1,5 +1,12 @@
 """
-fray LLVM code generator — compiles AST to native code via llvmlite.
+fray LLVM code generator — compiles AST to LLVM IR text via llvmlite's IR
+builder, which the object emitter (`llc`) then reads from a file.
+
+This is the last part of the project still using llvmlite: it builds the IR
+for the first native compiler. Everything downstream — the driver, the gates,
+the release chain — emits objects with LLVM's own `llc` and no binding at all.
+The IR builder here is being replaced with direct text emission, after which
+llvmlite is not a dependency of anything.
 
 Handles all fray.txt features: arithmetic, booleans, strings, lists, tuples,
 sets, functions, control flow, builtins, exceptions, and constants.
@@ -24,14 +31,13 @@ Phase 5: full ownership discipline + type-inference-driven specialization.
 """
 
 from __future__ import annotations
-import ctypes
 import os
 import subprocess
 import tempfile
 
 from typing import Optional, Any
 
-from llvmlite import ir, binding
+from llvmlite import ir
 
 import target
 
@@ -59,11 +65,6 @@ import modules
 from own_lattice import (INT, FLOAT, BOOL, STRING, LIST, TUPLE, SET, NONE,
                          UNKNOWN, VOID as NO_TYPE, TypeNode)
 from inference import Inference
-
-
-# ── Initialize LLVM ──
-binding.initialize_all_targets()
-binding.initialize_all_asmprinters()
 
 
 # ── Pointer type shorthand ──
@@ -3733,33 +3734,6 @@ RUNTIME_SOURCES = ["objects.c", "cycles.c", "ops.c", "printing.c",
                    "coroutine.c", "io.c", "structs.c", "maps.c",
                    "option_result.c"]
 
-_JIT_RUNTIME_HANDLE = None
-
-
-def _ensure_runtime_for_jit():
-    """Load libfrayrt into this process with RTLD_GLOBAL so MCJIT resolves
-    the fray_* runtime symbols the generated IR references (via dlsym).
-    Builds a shared library once and caches it in the temp dir."""
-    global _JIT_RUNTIME_HANDLE
-    if _JIT_RUNTIME_HANDLE is not None:
-        return
-    gcc = target.find_c_compiler()
-    if not gcc:
-        raise RuntimeError("C compiler required for JIT mode")
-    runtime_dir = os.path.join(os.path.dirname(__file__), "..", "runtime")
-    src_paths = [os.path.join(runtime_dir, s) for s in RUNTIME_SOURCES]
-    lib_path = os.path.join(tempfile.gettempdir(),
-                            f"frayrt-jit-{target.host_triple()}.so")
-    newest_src = max(os.path.getmtime(p) for p in src_paths)
-    if (not os.path.exists(lib_path)
-            or os.path.getmtime(lib_path) < newest_src):
-        subprocess.run(
-            [gcc, "-shared", "-O2", "-fPIC", "-pthread",
-             "-o", lib_path] + src_paths + ["-lm"],
-            check=True, capture_output=True,
-        )
-    _JIT_RUNTIME_HANDLE = ctypes.CDLL(lib_path, mode=os.RTLD_GLOBAL)
-
 def compile_to_ir(source: str, filename: str = "<string>") -> str:
     from sema import analyze
     tokens = tokenize(source, filename)
@@ -3778,20 +3752,46 @@ def compile_to_ir(source: str, filename: str = "<string>") -> str:
     return str(codegen.module)
 
 
+def find_llc():
+    """Path to LLVM's `llc`, or None when it is not installed.
+
+    The IR this module produces is handed to LLVM's own emitter rather than
+    built through a language binding, so Stage 0/1 needs the same tool the
+    release chain uses — one LLVM, one answer, and no second implementation of
+    "what does this IR mean" to disagree with it.
+    """
+    import shutil
+    for name in tuple(f"llc-{major}" for major in range(22, 13, -1)) + ("llc",):
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
 def compile_to_object(source: str, output_path: str, filename: str = "<string>"):
     ir_text = compile_to_ir(source, filename)
-    mod = binding.parse_assembly(ir_text)
-    mod.verify()
-
-    # Host triple + small code model for object emission.
-    # Small code model avoids _GLOBAL_OFFSET_TABLE_ references
-    # that break MinGW gcc linking (and is the default on Linux).
-    tgt = binding.Target.from_triple(target.host_triple())
-    machine = tgt.create_target_machine(opt=2, codemodel='small')
-    obj_data = machine.emit_object(mod)
-
-    with open(output_path, 'wb') as f:
-        f.write(obj_data)
+    llc = find_llc()
+    if not llc:
+        raise RuntimeError(
+            "llc not found — LLVM is required to build a fray program. "
+            "Install LLVM (e.g. `apt-get install llvm-22`) and retry.")
+    # The IR goes to a file and stays a file: llc reads it directly, so
+    # nothing re-parses the text on this side and the emitter sees exactly
+    # the bytes this module wrote. No retargeting happens here — the module
+    # already carries the host triple (see Codegen.__init__).
+    fd, ir_path = tempfile.mkstemp(suffix=".ll")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(ir_text)
+        result = subprocess.run([llc, "-filetype=obj", ir_path, "-o", output_path],
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"llc failed to emit an object (exit {result.returncode}):\n"
+                f"{result.stderr}")
+    finally:
+        if os.path.exists(ir_path):
+            os.remove(ir_path)
 
 
 def compile_program(source: str, output_path: str, filename: str = "<string>",
@@ -3843,22 +3843,3 @@ def compile_program(source: str, output_path: str, filename: str = "<string>",
     for ro in runtime_objs:
         if os.path.exists(ro):
             os.remove(ro)
-
-
-def run_ir_jit(ir_text: str):
-    _ensure_runtime_for_jit()
-    mod = binding.parse_assembly(ir_text)
-    mod.verify()
-    tgt = binding.Target.from_default_triple()
-    machine = tgt.create_target_machine()
-    ee = binding.create_mcjit_compiler(mod, machine)
-    ee.run_static_constructors()
-    addr = ee.get_function_address("main")
-    if addr == 0:
-        raise RuntimeError("main() not found")
-    # main is now the C signature (argc, argv); main passes them to
-    # fray_init_args, so pass the process's argv and an empty list for argc.
-    cfunc = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_void_p)(addr)
-    result = cfunc(0, None)
-    ee.run_static_destructors()
-    return result

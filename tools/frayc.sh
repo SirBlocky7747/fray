@@ -74,7 +74,7 @@ set \$FRAYC_DRIVER, or build one with:
 
 # Locate LLVM's object emitter (llc, or a versioned one).
 llc=""
-for candidate in llc llc-18 llc-17 llc-16 llc-15 llc-14; do
+for candidate in llc-22 llc-21 llc-20 llc-19 llc-18 llc-17 llc-16 llc-15 llc-14 llc; do
     if command -v "$candidate" >/dev/null 2>&1; then llc=$candidate; break; fi
 done
 [ -n "$llc" ] || die "llc not found — install LLVM (the object emitter for the native chain)"

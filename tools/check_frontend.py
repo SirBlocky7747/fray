@@ -47,19 +47,24 @@ ORACLE = TOOLS_DIR / "fray_oracle.py"
 SUPPORT_LIST = REPO_ROOT / "tests" / "selfhosted_supported.txt"
 
 sys.path.insert(0, str(TOOLS_DIR))
-# Reuse the golden runner's interpreter discovery: the driver needs llvmlite
-# to emit objects, and the gate must invoke it with an interpreter that has it.
-from run_tests import _find_python_with_llvmlite  # noqa: E402
+# bootstrap/ carries target.py, and used to reach sys.path as a side effect of
+# `from run_tests import _find_python_with_llvmlite` below — importing that
+# module ran its own `sys.path.insert`. Now that the import is gone, so is the
+# accident, and `import target` fails with a bare ModuleNotFoundError that
+# looks nothing like its cause.
+sys.path.insert(0, str(REPO_ROOT / "bootstrap"))
 import target  # platform detection (bootstrap/target.py)  # noqa: E402
-# The object emitter the release chain uses. The gate holds the emitted IR to
-# *its* parser, not just to llvmlite's: llvmlite bundles an LLVM whose pointer
-# types were folded into `ptr` and which skips numbers leniently, so modules
-# that `llc` rejects used to pass every check here and fail only in the native
-# chain (`instruction expected to be numbered '%0'`, array element type
-# mismatches).
+# The object emitter the release chain uses, and now the gate's only LLVM.
+# The emitted IR is held to *its* parser: the gate used to check it against
+# llvmlite's bundled LLVM too, which folded pointer types into `ptr` and
+# skipped numbers leniently, so modules `llc` rejects used to pass every check
+# here and fail only in the native chain (`instruction expected to be numbered
+# '%0'`, array element type mismatches). With llvmlite gone there is one LLVM
+# and one answer, and `llc` has to be installed for any of this to mean
+# anything — `llc_rejects` fails the gate outright when it is not.
 from frayc_selfhosted import find_llc  # noqa: E402
 
-PYTHON = _find_python_with_llvmlite()
+PYTHON = sys.executable
 
 DIAG_RE = re.compile(r"^(LEX|PARSE|SEMA|CODEGEN) ERROR: ")
 INTERNAL_MARKER = "Internal error in the self-hosted compiler"
@@ -463,27 +468,18 @@ def classify_run(timed_out: bool, stderr: str):
     return "silent-failure", diags
 
 
-def verify_ir(ir_text: str):
-    """Parse and verify IR with llvmlite. Returns None when fine, else a reason."""
-    try:
-        from llvmlite import binding
-    except ImportError:  # pragma: no cover - llvmlite is a CI dependency
-        return None
-    try:
-        mod = binding.parse_assembly(ir_text)
-        mod.verify()
-    except Exception as e:
-        return f"{type(e).__name__}: {e}"[:200]
-    return None
-
-
 def llc_rejects(ir_text: str):
     """Run LLVM's own emitter over the IR. None when it accepts it, else the
-    first error line; None as well when no `llc` is installed (the gate then
-    has only llvmlite's word for it, which is the weaker one)."""
+    first error line.
+
+    A missing `llc` used to read as "no opinion" and return None, which meant
+    a gate with no LLVM installed passed everything. It is a hard requirement
+    now, so it fails the gate with an explanation instead.
+    """
     llc = find_llc()
     if not llc:
-        return None
+        return ("no `llc` found: LLVM is required to verify IR (install "
+                "LLVM, e.g. `apt-get install llvm-22`)")
     with tempfile.TemporaryDirectory(prefix="fray_llc_") as td:
         ir_path = Path(td) / "module.ll"
         obj_path = Path(td) / "module.o"
@@ -586,7 +582,7 @@ def check_cases(timeout: float, use_run: bool, verbose: bool, update: bool) -> i
             if normalize(out) != normalize(expected):
                 problem = "output differs from .expected"
         else:
-            problem = verify_ir(out) or llc_rejects(out)
+            problem = llc_rejects(out)
 
         if problem:
             failures.append(name)
@@ -860,7 +856,7 @@ def check_stage1(timeout: float, verbose: bool, driver_out: Path = None) -> int:
             for line in (diags or err.strip().splitlines())[:4]:
                 print(f"        {line}")
         else:
-            problem = verify_ir(out)
+            problem = llc_rejects(out)
             if problem:
                 failures.append("frayc driver")
                 print(f"  FAIL  frayc driver: LLVM rejected the IR: {problem}")
@@ -919,7 +915,7 @@ def check_stage1(timeout: float, verbose: bool, driver_out: Path = None) -> int:
                 for line in (diags or err.strip().splitlines())[:4]:
                     print(f"        {line}")
                 continue
-            problem = verify_ir(out)
+            problem = llc_rejects(out)
             if problem:
                 failures.append(module)
                 print(f"  FAIL  {module}: LLVM rejected the IR: {problem}")
@@ -1103,7 +1099,7 @@ def check_stage2(timeout: float, verbose: bool, driver_in: Path = None,
         if "v1" not in failures:
             ir1 = compile_frayc(v1, "v1 -> frayc.fray")
         if ir1 is not None:
-            problem = verify_ir(ir1)
+            problem = llc_rejects(ir1)
             if problem:
                 failures.append("IR1")
                 print(f"  FAIL  IR1: LLVM rejected it: {problem}")
@@ -1124,7 +1120,7 @@ def check_stage2(timeout: float, verbose: bool, driver_in: Path = None,
                 failures.append("IR1!=IR2")
                 print("  FAIL  v1 and v2 emit different IR for the same source")
                 report_ir_difference(ir1, ir2, "ir1", "ir2")
-            problem = verify_ir(ir2)
+            problem = llc_rejects(ir2)
             if problem:
                 failures.append("IR2")
                 print(f"  FAIL  IR2: LLVM rejected it: {problem}")

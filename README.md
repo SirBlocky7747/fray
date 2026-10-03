@@ -39,7 +39,7 @@ bash tools/package_release.sh
 #   dist/fray-0.1.0-linux-x86_64.tar.gz — extract it and:
 #   ./bin/fray run examples/hello.fray
 
-# Or run through the Stage 0/1 pipeline (needs llvmlite) when debugging the frontend
+# Or run through the Stage 0/1 pipeline when debugging the frontend
 .venv/bin/python tools/frayc_selfhosted.py run program.fray
 ```
 
@@ -71,15 +71,40 @@ fray/
 Primary development target is **Linux** (developed on Linux Mint 22 / Ubuntu 24.04,
 also runs on macOS and Windows via MinGW-w64).
 
-```bash
-# 1. Python 3.11+ with llvmlite (Mint/Ubuntu: may need `sudo apt install python3-venv`)
-python3 -m venv .venv
-.venv/bin/pip install llvmlite
+### Requirements
 
-# 2. Build the C runtime (gcc, make)
+- **LLVM — required.** `llc` is the project's only object emitter. The release
+  chain, the Stage 0/1 bootstrap and the test gates all go through it, and it
+  is also what decides whether emitted IR is valid. There is no second backend
+  to fall back to, which is deliberate: a fallback was quietly re-checking
+  frontend output against a second, more lenient LLVM and going green on IR the
+  native chain could not build. Install `llvm-14` from your distribution, or a
+  current release from [apt.llvm.org](https://apt.llvm.org/).
+- **A C compiler and make** — to build and link `libfrayrt`.
+- **Python 3.11+** — for the Stage 0/1 bootstrap and the gates. The release
+  compile loop (`frayc_driver` → `llc` → `cc`) has no Python in it at all.
+- **llvmlite — currently required, and only by one file.** `bootstrap/codegen.py`
+  still builds LLVM IR through llvmlite's IR builder. Nothing else needs it: the
+  self-hosted compiler already emits IR as text, and the driver hands that text
+  straight to `llc`. That builder is mid-way through being replaced with text
+  emission; once it is, this line disappears and Python alone builds the first
+  compiler. Treat it as a dependency on its way out rather than a recommendation.
+
+```bash
+# 1. LLVM — required. Every object this project produces is emitted by LLVM's
+#    own `llc`: the release chain, the Stage 0/1 bootstrap and the test gates all
+#    go through it, and it is also what decides whether emitted IR is valid.
+#    Ubuntu 24.04 ships 14 in universe; current releases come from apt.llvm.org.
+sudo apt-get install -y llvm-14
+
+# 2. Python 3.11+ (Mint/Ubuntu: may need `sudo apt install python3-venv`)
+python3 -m venv .venv
+.venv/bin/pip install llvmlite   # bootstrap/codegen.py only — see Requirements
+
+# 3. Build the C runtime (gcc, make)
 make -C runtime
 
-# 3. Compile and run a program (Stage 0 Python toolchain)
+# 4. Compile and run a program (Stage 0 Python toolchain)
 .venv/bin/python bootstrap/frayc.py build program.fray -o program
 ./program
 
