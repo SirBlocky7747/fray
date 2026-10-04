@@ -207,6 +207,16 @@ def main(argv=None):
             print(f"{name:<16} {res['compiled_best']:>9.3f}s {'n/a':>10}")
 
     bad = False
+    # A benchmark that failed to run fails the run, whether or not there is a
+    # baseline to compare against. This check used to live inside the
+    # comparison block, so on a seeding run — no baseline on disk, comparison
+    # skipped — a benchmark that errored was silently tolerated and the gate
+    # passed while checking nothing.
+    for name, res in results.items():
+        if "error" in res:
+            print(f"  {name}: ERROR (benchmark did not run)")
+            bad = True
+
     if args.baseline:
         baseline_path = Path(args.baseline)
         if baseline_path.exists():
@@ -214,9 +224,7 @@ def main(argv=None):
             print("\nregression check (vs %s):" % baseline_path.name)
             for name, res in results.items():
                 if "error" in res:
-                    print(f"  {name}: ERROR (was failing a regression gate)")
-                    bad = True
-                    continue
+                    continue  # already reported above
                 old = base.get(name, {}).get("compiled_best")
                 # A regression has to be both relatively large and larger
                 # than the noise: fib finishes in ~1-2ms, where process
