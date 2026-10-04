@@ -228,6 +228,14 @@ def main(argv=None):
                     bad = True
             if not bad:
                 print("  no regressions")
+        else:
+            # A missing baseline used to skip the comparison silently and then
+            # write the file, which reads like a passing gate while checking
+            # nothing. Say so instead: the run seeds the baseline and reports
+            # that no regression check happened.
+            print(f"\nno {baseline_path.name} yet — this run seeds it rather "
+                  f"than comparing. Nothing was checked for regressions; commit "
+                  f"the file written below to make later runs compare.")
         baseline_path.write_text(json.dumps(results, indent=2))
         print(f"baseline written to {baseline_path}")
 

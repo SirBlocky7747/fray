@@ -255,10 +255,19 @@ jobs:
       - name: Run benchmarks and check for regressions
         run: |
           python benchmarks/run_benchmarks.py \
-            --baseline benchmarks/baseline.json
-        # The runner diffs against the committed baseline.json when present
-        # and fails on >25% slowdowns; it rewrites the file with fresh
-        # numbers only in the working copy (not committed automatically).
+            --baseline benchmarks/baseline-ci.json
+
+      # The absolute-time check compares seconds against seconds, so its
+      # baseline has to come from the machine doing the measuring.
+      # benchmarks/baseline.json holds numbers from a 12-core workstation, and
+      # diffing a shared 2-core runner against those failed on unchanged code —
+      # pinning one benchmark to a single core was enough to trip it
+      # (parallel_sum 0.004s -> 0.010s) — so this job keeps its own baseline.
+      # Present: the same >25% and >5ms rule applies, against runner-measured
+      # numbers. Absent: the run seeds the file and says it compared nothing,
+      # and the step below prints the file so it can be committed.
+      - name: CI baseline (commit this to make the check bite)
+        run: cat benchmarks/baseline-ci.json
 
       # Compiled-vs-CPython gate. Every benchmark now clears CPython on
       # Linux (see plan.md Phase 5), so this is a real gate again — with a
@@ -272,7 +281,7 @@ jobs:
           TOLERANCE = 1.25
           failed = False
 
-          data = json.load(open("benchmarks/baseline.json"))
+          data = json.load(open("benchmarks/baseline-ci.json"))
           for name, res in data.items():
               if "error" in res:
                   raise SystemExit(f"{name}: benchmark error: {res['error']}")
