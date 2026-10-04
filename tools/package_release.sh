@@ -64,6 +64,13 @@ echo ""
 # 1. The compiler binary. It is platform-specific (it is linked for this host),
 #    so packaging fails loudly rather than shipping a Python fallback.
 DRIVER="$ROOT/build/frayc_driver"
+# Windows executables carry an .exe suffix. Looking only for the suffixless
+# name meant the Windows branch could never find a compiler it had just built,
+# and failed with "no native compiler" pointing at a path that cannot exist
+# there.
+if [ ! -x "$DRIVER" ] && [ -x "$DRIVER.exe" ]; then
+    DRIVER="$DRIVER.exe"
+fi
 if [ ! -x "$DRIVER" ]; then
     cat >&2 <<EOF
 package_release.sh: no native compiler at $DRIVER
@@ -93,8 +100,11 @@ rm -rf "$PACKAGE_DIR"
 mkdir -p "$PACKAGE_DIR"/{bin,lib,runtime,compiler,stdlib,bootstrap,tools,examples,docs,spec,tests/cases}
 
 echo "--- compiler ---"
-cp "$DRIVER" "$PACKAGE_DIR/bin/frayc_driver"
-chmod +x "$PACKAGE_DIR/bin/frayc_driver"
+# Keep whatever suffix the compiler was built with: bin/fray and bin/frayc
+# invoke it by name, so renaming frayc_driver.exe to frayc_driver would ship a
+# Windows package that cannot run itself.
+cp "$DRIVER" "$PACKAGE_DIR/bin/$(basename "$DRIVER")"
+chmod +x "$PACKAGE_DIR/bin/$(basename "$DRIVER")"
 cp "$ROOT/tools/frayc.sh" "$PACKAGE_DIR/bin/frayc"
 cp "$ROOT/tools/fray.sh" "$PACKAGE_DIR/bin/fray"
 chmod +x "$PACKAGE_DIR/bin/frayc" "$PACKAGE_DIR/bin/fray"
@@ -242,7 +252,17 @@ else
     if command -v zip >/dev/null 2>&1; then
         zip -qr "$PACKAGE_NAME.zip" "$PACKAGE_NAME"
     else
-        python3 -c "
+        # A Windows runner has `python`, not necessarily `python3`, and the
+        # whole point of this branch is that packaging works there.
+        ZIPPY=""
+        for candidate in python3 python; do
+            if command -v "$candidate" >/dev/null 2>&1; then ZIPPY="$candidate"; break; fi
+        done
+        if [ -z "$ZIPPY" ]; then
+            echo "package_release.sh: neither zip nor python is available to build the archive" >&2
+            exit 1
+        fi
+        "$ZIPPY" -c "
 import os, zipfile
 with zipfile.ZipFile('$PACKAGE_NAME.zip', 'w', zipfile.ZIP_DEFLATED) as zf:
     for root, _, files in os.walk('$PACKAGE_NAME'):

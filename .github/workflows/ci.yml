@@ -299,3 +299,137 @@ jobs:
           if failed:
               raise SystemExit("compiled code trails CPython beyond tolerance")
           EOF
+
+  # The release packaging script has a macOS and a Windows branch, and both
+  # were written without ever being run: package_release.sh detected those
+  # platforms and produced tar.gz and zip accordingly, but nothing proved the
+  # package built there is one a user can actually run. This job builds the
+  # compiler from source and extracts the result on each platform, then runs
+  # the package's own acceptance test from inside the extracted archive.
+  #
+  # Only packaging is exercised. The test, memory and benchmark jobs stay on
+  # Linux: the memory gate is AddressSanitizer, and the benchmark gate compares
+  # wall-clock against a baseline captured on Linux, neither of which transfers
+  # to another runner. `shell: bash` throughout, because package_release.sh is
+  # a bash script and on Windows it runs under Git Bash, where `uname -s`
+  # reports MINGW64_NT and takes the branch it always meant to.
+  package:
+    name: package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install llvmlite (Stage 0/1 only)
+        run: |
+          python -m pip install --upgrade pip
+          pip install llvmlite
+
+      - name: Install LLVM (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc wget gnupg
+          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-22 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-22.list
+          sudo apt-get update
+          sudo apt-get install -y llvm-22
+          llc-22 --version | head -1
+
+      - name: Install LLVM (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          llc --version | head -1
+
+      - name: Install LLVM and GCC (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install llvm --no-progress -y
+          choco install mingw --no-progress -y
+          echo "C:\Program Files\LLVM\bin" >> "$GITHUB_PATH"
+          echo "C:\ProgramData\mingw64\mingw64\bin" >> "$GITHUB_PATH"
+          llc --version | head -1
+
+      # What the compiler needs is a C compiler and llc; the test above only
+      # asserts each exists on PATH. Name them here so a runner image change
+      # fails with a message about the missing tool rather than a compiler
+      # error three steps later.
+      - name: Toolchain present
+        run: |
+          command -v llc-22 || command -v llc || echo "NOTE: no versioned llc, using plain llc"
+          command -v gcc || command -v clang || command -v cc || { echo "no C compiler"; exit 1; }
+          llc --version | head -1
+
+      - name: Build the compiler
+        run: |
+          python tools/frayc_selfhosted.py build compiler/frayc.fray \
+            -o build/frayc_driver --timeout 900
+
+      - name: Build the runtime
+        run: make -s -C runtime libfrayrt.a
+
+      - name: Package the release
+        run: bash tools/package_release.sh
+
+      # The release criterion, run from inside the archive rather than from
+      # the checkout: what ships has to compile and run a program on its own.
+      - name: Run a program from the packaged archive
+        run: |
+          set -euo pipefail
+          cd dist
+          PKG=$(ls -d fray-*/ | head -1)
+          PKG="${PKG%/}"
+          if [ -f "$PKG.zip" ]; then
+            unzip -q "$PKG.zip" -d verify
+          else
+            tar -xzf "$PKG.tar.gz" -C verify
+          fi
+          cd "verify/$PKG"
+          echo "--- bin/ ---"
+          ls bin/
+          ./bin/fray run examples/hello.fray
+          ./bin/fray run examples/fizzbuzz.fray | tail -3
+
+      - name: Golden cases from the packaged archive
+        run: |
+          set -euo pipefail
+          cd dist
+          PKG=$(ls -d fray-*/ | head -1)
+          PKG="${PKG%/}"
+          if [ -f "$PKG.zip" ]; then
+            unzip -q "$PKG.zip" -d verify2
+          else
+            tar -xzf "$PKG.tar.gz" -C verify2
+          fi
+          cd "verify2/$PKG"
+          bash tools/check_cases.sh
+
+      - name: Upload the archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: fray-${{ matrix.os }}
+          # Windows packages as .zip and the others as .tar.gz, so glob both;
+          # a .tar.gz-only pattern would fail the Windows leg on its own
+          # artifact upload after the package itself built and ran fine.
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
