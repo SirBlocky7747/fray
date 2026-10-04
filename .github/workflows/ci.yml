@@ -52,7 +52,6 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/llvm-22.list
           sudo apt-get update
           sudo apt-get install -y llvm-22
-          llc-22 --version | head -1
 
       # The library is described by two lists — runtime/Makefile's
       # RUNTIME_SOURCES and bootstrap/codegen.py's — and a translation unit
@@ -208,7 +207,6 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/llvm-22.list
           sudo apt-get update
           sudo apt-get install -y llvm-22
-          llc-22 --version | head -1
 
       - name: C runtime under AddressSanitizer
         run: make -C runtime asan
@@ -250,7 +248,6 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/llvm-22.list
           sudo apt-get update
           sudo apt-get install -y llvm-22
-          llc-22 --version | head -1
 
       - name: Run benchmarks and check for regressions
         run: |
@@ -349,14 +346,12 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/llvm-22.list
           sudo apt-get update
           sudo apt-get install -y llvm-22
-          llc-22 --version | head -1
 
       - name: Install LLVM (macOS)
         if: runner.os == 'macOS'
         run: |
           brew install llvm
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
-          llc --version | head -1
 
       - name: Install LLVM and GCC (Windows)
         if: runner.os == 'Windows'
@@ -365,17 +360,32 @@ jobs:
           choco install mingw --no-progress -y
           echo "C:\Program Files\LLVM\bin" >> "$GITHUB_PATH"
           echo "C:\ProgramData\mingw64\mingw64\bin" >> "$GITHUB_PATH"
-          llc --version | head -1
 
       # What the compiler needs is a C compiler and llc; the test above only
       # asserts each exists on PATH. Name them here so a runner image change
       # fails with a message about the missing tool rather than a compiler
       # error three steps later.
+      # This runs after the install steps, so $GITHUB_PATH has taken effect by
+      # now — an `llc --version` inside the install step itself would not, and
+      # on Linux the tool is only ever named llc-22. The probe order mirrors
+      # bootstrap/codegen.py's find_llc(), so a toolchain this accepts is a
+      # toolchain the compiler can actually use.
       - name: Toolchain present
         run: |
-          command -v llc-22 || command -v llc || echo "NOTE: no versioned llc, using plain llc"
-          command -v gcc || command -v clang || command -v cc || { echo "no C compiler"; exit 1; }
-          llc --version | head -1
+          set -euo pipefail
+          LLC=""
+          for candidate in llc-22 llc-21 llc-20 llc-19 llc-18 llc-17 llc-16 llc-15 llc-14 llc; do
+            if command -v "$candidate" >/dev/null 2>&1; then LLC="$candidate"; break; fi
+          done
+          if [ -z "$LLC" ]; then echo "no llc found on PATH"; exit 1; fi
+          echo "llc: $LLC"
+          "$LLC" --version | head -1
+          CC=""
+          for candidate in gcc clang cc; do
+            if command -v "$candidate" >/dev/null 2>&1; then CC="$candidate"; break; fi
+          done
+          if [ -z "$CC" ]; then echo "no C compiler found on PATH"; exit 1; fi
+          echo "cc: $CC"
 
       - name: Build the compiler
         run: |
