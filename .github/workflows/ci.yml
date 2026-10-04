@@ -406,6 +406,11 @@ jobs:
           cd dist
           PKG=$(ls -d fray-*/ | head -1)
           PKG="${PKG%/}"
+          # `unzip -d` creates the directory it is given; `tar -C` does not,
+          # it only switches into it. Without this the Linux and macOS legs
+          # died at extraction with "tar: verify: Cannot open", while the
+          # Windows leg, which goes through unzip, carried on.
+          mkdir -p verify
           if [ -f "$PKG.zip" ]; then
             unzip -q "$PKG.zip" -d verify
           else
@@ -423,6 +428,7 @@ jobs:
           cd dist
           PKG=$(ls -d fray-*/ | head -1)
           PKG="${PKG%/}"
+          mkdir -p verify2
           if [ -f "$PKG.zip" ]; then
             unzip -q "$PKG.zip" -d verify2
           else
