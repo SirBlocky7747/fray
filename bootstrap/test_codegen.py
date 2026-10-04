@@ -105,10 +105,85 @@ def test_codegen():
     return failed == 0
 
 
+def _ref_counts(code: str, name: str) -> tuple[int, int]:
+    """(releases, retains) actually emitted in the function bodies."""
+    ir_text = compile_to_ir(code, f"{name}.fray")
+    rel = ir_text.count('call void @"fray_release"')
+    ret = ir_text.count('call void @"fray_retain"')
+    return rel, ret
+
+
+# Rebinding a local from a call that returns a heap box must release the
+# previous binding. In a function-local (alloca) slot the store used to skip
+# that release, so every rebinding in a loop orphaned its predecessor and only
+# the last value was dropped by the return path — `msg = readAsync(conn, 64)`
+# in a coroutine leaked one string per round-trip. An async def is where this
+# showed up as a leak because only the coroutine's loop rebinds across the
+# park; a plain def happened to reach the other slot path.
+_REBIND_CASES = {
+    "rebind_plain_literal": """def f(n):
+    m = [0]
+    i = 0
+    while i < 3:
+        m = [n, n]
+        i += 1
+    return m
+""",
+    "rebind_plain_boxedcall": """def make(n):
+    return [n, n]
+
+def f(n):
+    m = [0]
+    i = 0
+    while i < 3:
+        m = make(n)
+        i += 1
+    return m
+""",
+    "rebind_async_boxedcall": """def make(n):
+    return [n, n]
+
+async def f(n):
+    m = [0]
+    i = 0
+    while i < 3:
+        m = make(n)
+        i += 1
+    return m
+""",
+}
+
+
+def test_local_rebind_releases():
+    """Every rebinding shape must give back the reference the slot held."""
+    print("=== Local rebind releases its previous value ===")
+    nets = {}
+    failed = 0
+    for name, code in _REBIND_CASES.items():
+        try:
+            rel, ret = _ref_counts(code, name)
+            nets[name] = rel - ret
+            print(f"  {name}: {rel} release, {ret} retain (net {rel - ret})")
+        except Exception as e:
+            print(f"  FAIL  {name}: {type(e).__name__}: {e}")
+            failed += 1
+    if failed:
+        return False
+    # The async shape is the one that leaked; it must now match the plain one.
+    if nets["rebind_async_boxedcall"] != nets["rebind_plain_boxedcall"]:
+        print("  FAIL  async rebind releases fewer references than the plain "
+              f"def: {nets['rebind_async_boxedcall']} != "
+              f"{nets['rebind_plain_boxedcall']}")
+        return False
+    print("  PASS  async and plain rebinds balance identically")
+    return True
+
+
 def main():
     ir_ok = test_codegen()
+    rebind_ok = test_local_rebind_releases()
 
-    if ir_ok:
+    if ir_ok and rebind_ok:
         print("All IR generation tests passed!")
         return 0
     else:

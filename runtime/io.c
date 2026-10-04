@@ -518,9 +518,16 @@ FrayValue fray_io_port(FrayValue fd) {
 #endif
 }
 
-/* Boxed shims, matching the convention every other builtin uses. Each one
- * consumes its arguments' references, which the codegen's release-all pass
- * would otherwise have to special-case. */
+/* Boxed shims, matching the convention every other builtin uses. The shims
+ * exist so codegen calls one uniform signature, not because ownership moves:
+ * the CALLER owns the arguments. Measured at the shim boundary, an argument
+ * arrives with refcount 2 -- the caller's binding plus codegen's retain for
+ * the call -- and the caller releases its own reference afterwards. Releasing
+ * here as well frees the object while it is still live, which shows up as
+ * `ValueError: not a socket` on the next use of the same fd.
+ *
+ * The original comment here said the callee consumes the arguments, which is
+ * backwards, and cost a long investigation to disprove. */
 FrayValue fray_io_read_file_boxed(FrayValue path) {
     return fray_io_read_file(path);
 }

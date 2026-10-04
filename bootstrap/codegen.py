@@ -985,7 +985,16 @@ class CodeGen:
                 self._release(old)
             else:
                 alloca = self._ensure_alloca(name)
+                # Same rule as every other branch above: the slot owns what it
+                # held, so the previous value is released here. Without this a
+                # function-local rebound in a loop orphaned every value but
+                # the last, and the return path only drops the slot once --
+                # which is how `msg = readAsync(conn, 64)` in a coroutine
+                # leaked one string per round-trip. First binding loads NULL
+                # from the fresh alloca, and fray_release ignores NULL.
+                old = self.builder.load(alloca)
                 self.builder.store(val, alloca)
+                self._release(old)
         else:
             gv = self._global_slot(name)
             old = self.builder.load(gv)
