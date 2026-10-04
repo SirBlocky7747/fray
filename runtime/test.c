@@ -393,6 +393,35 @@ static void (*const g_thunks[STRESS_THREADS])(FrayValue) = {
     worker_thunk_4, worker_thunk_5, worker_thunk_6, worker_thunk_7,
 };
 
+/* An exiting thread parks its GC space; the next thread to attach must get
+ * that space back rather than a new one. The registry used to overwrite the
+ * slot instead, dropping the last pointer to the retired space and leaking it
+ * — 192 bytes per reuse, which is how this surfaced as an ASan failure in
+ * `make -C runtime asan` (a racing test never ran the reuse path locally, so
+ * it looked clean). */
+static void reuse_thunk(FrayValue self) { (void)self; }
+
+static void test_thread_space_reuse(void) {
+    int before = fray_gc_space_count();
+    for (int batch = 0; batch < 3; batch++) {
+        int64_t ids[STRESS_THREADS];
+        for (int i = 0; i < STRESS_THREADS; i++) {
+            FrayValue fn = fray_function("reuse_worker", (void *)reuse_thunk, 0);
+            ids[i] = fray_thread_spawn(fn);
+            fray_release(fn);
+            assert(ids[i] > 0);
+        }
+        for (int i = 0; i < STRESS_THREADS; i++) fray_thread_join(ids[i]);
+    }
+    int grown = fray_gc_space_count() - before;
+    printf("  [reuse] 3 batches of %d threads grew the table by %d slot(s)\n",
+           STRESS_THREADS, grown);
+    /* Three batches of the same width cannot need more slots than one batch:
+     * the parked spaces have to come back. */
+    assert(grown <= STRESS_THREADS);
+    ok("thread_space_reuse");
+}
+
 static void test_thread_stress(void) {
     printf("  [stress] setup\n");
     g_shared_list = fray_list();
@@ -609,6 +638,7 @@ int main(void) {
     test_builders_and_arith_smoke();
     test_range_and_set();
     test_thread_stress();
+    test_thread_space_reuse();
     test_coroutine_stress();
     test_coro_thread_pipeline();
 

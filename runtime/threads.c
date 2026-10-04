@@ -22,11 +22,11 @@
 
 /* Registry slot-grab, implemented here against cycles.c's static table via
  * the exported helper below (cycles.c owns g_spaces/g_space_count). */
-extern void fray_gc_space_slot_grab(GcSpace *space);
+extern GcSpace *fray_gc_space_slot_grab(GcSpace *fresh);
 
 /* ── Thread registry ── */
 
-#define MAX_THREADS 256
+#define MAX_THREADS FRAY_MAX_THREADS
 
 typedef struct FrayThread {
     pthread_t      handle;
@@ -117,8 +117,7 @@ int64_t fray_thread_spawn(FrayValue fn) {
 
     /* The spawned thread needs its own GC space registered BEFORE it runs.
      * We hold the world lock, so the slot grab is atomic with the start. */
-    GcSpace *space = fray_gc_space_new();
-    fray_gc_space_slot_grab(space);
+    GcSpace *space = fray_gc_space_slot_grab(fray_gc_space_new());
     fray_gc_active_threads_add(1);
     fray_retain(fn);
 

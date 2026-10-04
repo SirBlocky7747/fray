@@ -669,12 +669,19 @@ void fray_world_unlock(void);
 
 /* ── Internal: shared across runtime translation units ── */
 
+/* Live fray threads a program may have at once. The GC space table is sized
+ * from this (one space per live thread), so it must not be the tighter limit:
+ * a space that cannot be registered is unreachable, which is a leak. */
+#define FRAY_MAX_THREADS 256
+
 /* Per-thread GC space struct — defined in cycles.c, used by threads.c. */
 typedef struct ScratchEntry ScratchEntry;
 typedef struct GcSpace GcSpace;
 GcSpace *fray_gc_space_new(void);
 void     fray_gc_space_retire(GcSpace *space);   /* release lists, park slot */
-void     fray_gc_space_slot_grab(GcSpace *space); /* register into free slot */
+/* Registers a freshly allocated space and returns the space actually
+ * registered, which is a parked one when a reuse is available. */
+GcSpace *fray_gc_space_slot_grab(GcSpace *fresh);
 void     fray_gc_active_threads_add(int delta);   /* spawn-side accounting   */
 GcSpace *fray_gc_current_space(void);
 void     fray_gc_current_space_set(GcSpace *space);
@@ -716,6 +723,7 @@ extern const FrayTypeInfo fray_type_map;
 extern const FrayTypeInfo fray_type_option;
 extern const FrayTypeInfo fray_type_result;
 int      fray_threads_registered(void);
+int      fray_gc_space_count(void);   /* slots ever created            */
 void     fray_threads_foreach_space(void (*cb)(void *space, void *ctx), void *ctx);
 void    *fray_thread_gc_space(int thread_id);  /* NULL if unregistered      */
 void     fray_threads_pending_push(FrayValue v);   /* deferred container free */

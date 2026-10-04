@@ -83,7 +83,7 @@ struct GcSpace {
  * (emptied) space for reuse rather than removing it, so owner indices and
  * g_spaces[] reads on hot paths never dangle. */
 
-#define MAX_SPACES 64
+#define MAX_SPACES (FRAY_MAX_THREADS + 2)
 
 static _Thread_local GcSpace *tls_space = NULL;
 
@@ -305,14 +305,32 @@ FrayValue *edges_of_pub(FrayObj *o, size_t *n) {
 /* Register a space into a stable slot (reusing parked ones). Used by
  * current_space() for lazy attach and exported for thread spawn, which
  * must register the space BEFORE the new thread starts running. */
-void fray_gc_space_slot_grab(GcSpace *space) {
+GcSpace *fray_gc_space_slot_grab(GcSpace *fresh) {
     registry_init();
     pthread_mutex_lock(&g_spaces_lock);
+    GcSpace *space = fresh;
     int slot = -1;
     for (int s = 0; s < g_space_count; s++) {
         if (g_spaces[s] && g_spaces[s]->parked) { slot = s; break; }
     }
-    if (slot < 0 && g_space_count < MAX_SPACES) slot = g_space_count++;
+    if (slot >= 0) {
+        /* Reuse the retired space itself rather than overwriting its slot:
+         * the fresh allocation is then redundant, and dropping the retired
+         * one instead would leak it (192 bytes, once per reuse). A slot is
+         * never removed, so every allocated space stays in the table for the
+         * life of the process and nothing published is ever freed — which is
+         * what makes it safe for a caller to hold a space pointer it looked
+         * up under this lock and used after releasing it. */
+        space = g_spaces[slot];
+        space->owner = slot;
+        space->parked = false;
+        pthread_mutex_unlock(&g_spaces_lock);
+        /* `fresh` was never published, so no other thread can hold it. */
+        pthread_mutex_destroy(&fresh->lock);
+        free(fresh);
+        return space;
+    }
+    if (g_space_count < MAX_SPACES) slot = g_space_count++;
     if (slot >= 0) {
         g_spaces[slot] = space;
         space->owner = slot;
@@ -321,13 +339,13 @@ void fray_gc_space_slot_grab(GcSpace *space) {
         space->owner = -1; /* registry full: space still usable, untracked */
     }
     pthread_mutex_unlock(&g_spaces_lock);
+    return space;
 }
 
 static GcSpace *current_space(void) {
     if (tls_space) return tls_space;
     registry_init();
-    tls_space = fray_gc_space_new();
-    fray_gc_space_slot_grab(tls_space);
+    tls_space = fray_gc_space_slot_grab(fray_gc_space_new());
     pthread_mutex_lock(&g_spaces_lock);
     g_active_threads++;
     pthread_mutex_unlock(&g_spaces_lock);
@@ -357,6 +375,9 @@ void *fray_thread_gc_space(int thread_id) {
     pthread_mutex_lock(&g_spaces_lock);
     GcSpace *sp = (thread_id >= 0 && thread_id < g_space_count)
                 ? g_spaces[thread_id] : NULL;
+    /* A parked space is empty and is the one a later attach may be handed, so
+     * it is not a valid answer to hand out. */
+    if (sp && sp->parked) sp = NULL;
     pthread_mutex_unlock(&g_spaces_lock);
     return sp;
 }
@@ -373,6 +394,17 @@ int fray_threads_registered(void) {
     registry_init();
     pthread_mutex_lock(&g_spaces_lock);
     int n = g_active_threads;
+    pthread_mutex_unlock(&g_spaces_lock);
+    return n;
+}
+
+/* Slots ever created. A healthy registry only grows to the peak number of
+ * live threads: once threads start exiting, later attaches reuse the spaces
+ * they parked instead of adding slots. */
+int fray_gc_space_count(void) {
+    registry_init();
+    pthread_mutex_lock(&g_spaces_lock);
+    int n = g_space_count;
     pthread_mutex_unlock(&g_spaces_lock);
     return n;
 }
