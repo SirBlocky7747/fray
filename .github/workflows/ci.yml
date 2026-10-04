@@ -232,10 +232,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install llvmlite
 
-      - name: Install C toolchain
+      # The benchmarks compile real programs, and since the object emitter is
+      # LLVM's own `llc` rather than a language binding, compiling one with
+      # LLVM absent fails outright — there is no second backend left to fall
+      # back to. That is what kept this job red after the llvmlite removal: the
+      # two other jobs install llvm-22 for exactly this reason and this one
+      # still installed only gcc, so run_benchmarks.py could not link a single
+      # benchmark. Same version, same apt.llvm.org repository as the others.
+      - name: Install C toolchain and LLVM
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc
+          sudo apt-get install -y gcc wget gnupg
+          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-22 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-22.list
+          sudo apt-get update
+          sudo apt-get install -y llvm-22
+          llc-22 --version | head -1
 
       - name: Run benchmarks and check for regressions
         run: |
