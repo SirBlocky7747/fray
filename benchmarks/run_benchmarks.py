@@ -180,7 +180,15 @@ def main(argv=None):
                     help="JSON file to diff against (and to which none is written)")
     args = ap.parse_args(argv)
 
-    names = sorted(p.name for p in BENCH_DIR.glob("*.fray"))
+    # io_*.fray belong to run_io_benchmarks.py, which owns their fixtures:
+    # it creates /tmp/fray_io_bench and rewrites their NFILES/DIR constants
+    # before running them. Globbing them here compiles a program whose data
+    # files do not exist, the oracle raises FrayValueError, and because the
+    # oracle runs in-process its sys.exit(1) kills this runner outright —
+    # past the `except Exception` below, which is why it failed with no
+    # "FAILED:" line and no traceback rather than as one bad benchmark.
+    names = sorted(p.name for p in BENCH_DIR.glob("*.fray")
+                   if not p.name.startswith("io_"))
     results = {}
     print(f"{'benchmark':<16} {'compiled':>10} {'CPython':>10} {'speedup':>9}")
     for name in names:
