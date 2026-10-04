@@ -329,8 +329,19 @@ def link_object(obj_path: str, output_path: str, runtime_dir: str = None):
             if not os.path.exists(rc):
                 continue
             ro = output_path + ".rt." + os.path.basename(rc) + ".o"
-            subprocess.run([gcc, "-c", "-O2", "-o", ro, rc],
-                           check=True, capture_output=True)
+            result = subprocess.run([gcc, "-c", "-O2", "-o", ro, rc],
+                                    capture_output=True, text=True)
+            if result.returncode != 0:
+                # The link and llc steps below both report the compiler's own
+                # diagnostics on failure. This one used capture_output with
+                # check=True, so a failed C compile surfaced nothing but an
+                # exit status and the actual error never reached the log --
+                # which is why a real compile failure on one platform could not
+                # be told apart from a missing toolchain.
+                print(f"C compile error in {rc}:\n{result.stderr}",
+                      file=sys.stderr)
+                raise subprocess.CalledProcessError(
+                    result.returncode, [gcc, "-c", "-O2", "-o", ro, rc])
             runtime_objs.append(ro)
 
         cmd = [gcc, "-o", output_path, obj_path] + runtime_objs
