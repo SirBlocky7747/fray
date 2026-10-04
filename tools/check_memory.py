@@ -45,7 +45,59 @@ sys.path.insert(0, str(BOOTSTRAP_DIR))
 
 DIAG_RE = re.compile(r"^(LEX|PARSE|LINK|SEMA|CODEGEN) ERROR: ")
 
+# The fixtures the io_* benchmarks read. benchmarks/run_io_benchmarks.py
+# owns that setup; see _ensure_io_fixtures for why this gate needs its own.
+IO_DATA_DIR = Path("/tmp/fray_io_bench")
+IO_PAYLOAD_LINE = "fray io benchmark payload line\n"
+IO_PAYLOAD_LINES = 200
+
 import target  # noqa: E402  (bootstrap/target.py)
+
+
+def _int_constant(text: str, name: str, default: int) -> int:
+    """Read an integer constant out of fray source (e.g. NFILES = 64)."""
+    m = re.search(rf"^{name}\s*=\s*(\d+)", text, re.MULTILINE)
+    return int(m.group(1)) if m else default
+
+
+def _expected_exit(source_path: Path) -> int:
+    """The status a golden case is supposed to end with.
+
+    tests/cases/<name>.exit records the cases that are *meant* to fail — an
+    uncaught exception is the successful outcome of the error path, not a
+    broken program. Everything else is expected to exit 0. This mirrors the
+    convention tools/check_cases.sh already follows.
+    """
+    marker = source_path.with_suffix(".exit")
+    if not marker.exists():
+        return 0
+    try:
+        return int(marker.read_text().strip())
+    except ValueError:
+        return 0
+
+
+def _ensure_io_fixtures(programs: list) -> None:
+    """Create the files the io_file_* benchmarks read.
+
+    benchmarks/run_io_benchmarks.py owns those programs and lays down
+    /tmp/fray_io_bench before running them; the memory gate compiles them
+    straight from the tree, where that directory does not exist. Every
+    io_file_* program therefore died on `ValueError: no such file` — and a
+    program that dies early produces no ASan output, so the gate scored it
+    "clean" and the failure never surfaced. Building the fixtures is what
+    turns three dead entries in the check into three real ones, and keeps
+    io_socket_coro (which finds a real leak) inside the gate.
+    """
+    sources = [p for p in programs if p.stem.startswith("io_file")]
+    if not sources:
+        return
+    IO_DATA_DIR.mkdir(exist_ok=True)
+    body = IO_PAYLOAD_LINE * IO_PAYLOAD_LINES
+    for path in sources:
+        nfiles = _int_constant(path.read_text(), "NFILES", 64)
+        for i in range(nfiles):
+            (IO_DATA_DIR / f"f{i}.txt").write_text(body)
 
 
 def _asan_flags(cc: str, probe: str) -> list | None:
@@ -83,7 +135,7 @@ def _build_runtime_objects(cc: str, flags: list, workdir: Path, log) -> list:
 
 
 def _run_case(source_path: Path, workdir: Path, cc: str, flags: list,
-              rt_objs: list, log) -> tuple[bool, str]:
+              rt_objs: list, log) -> tuple[bool, str, int]:
     """Compile and run one program; return (clean, detail)."""
     sys.path.insert(0, str(BOOTSTRAP_DIR))
     import codegen
@@ -107,27 +159,34 @@ def _run_case(source_path: Path, workdir: Path, cc: str, flags: list,
     return _run_under_asan(exe)
 
 
-def _run_under_asan(exe: Path) -> tuple[bool, str]:
+def _run_under_asan(exe: Path) -> tuple[bool, str, int]:
+    """Run one instrumented binary; return (clean, detail, exit status).
+
+    The exit status comes back separately because a program can fail without
+    saying anything to stderr — a segfault, or an uncaught exception — and a
+    gate that reads only ASan's output scores those runs "clean".
+    """
     env = dict(os.environ, ASAN_OPTIONS="detect_leaks=1")
     try:
         proc = subprocess.run([str(exe)], capture_output=True, text=True,
                               env=env, timeout=600)
     except subprocess.TimeoutExpired:
-        return False, "timed out after 600s"
+        return False, "timed out after 600s", -1
 
     # ASan reports both memory errors and leaks on stderr; either fails.
     err = proc.stderr
     for line in err.splitlines():
         if "Sanitizer:" in line and "SUMMARY" in line:
-            return False, line.split("Sanitizer: ", 1)[-1]
+            return False, line.split("Sanitizer: ", 1)[-1], proc.returncode
     if "Sanitizer" in err:
         first = next((l for l in err.splitlines() if "Sanitizer" in l), "")
-        return False, first.strip()
-    return True, proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
+        return False, first.strip(), proc.returncode
+    detail = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
+    return True, detail, proc.returncode
 
 
 def _run_case_driver(source_path: Path, workdir: Path, cc: str, flags: list,
-                     rt_objs: list, log, driver: Path) -> tuple[bool, str]:
+                     rt_objs: list, log, driver: Path) -> tuple[bool, str, int]:
     """Same check, but the object is compiled by the native compiler driver.
 
     This is the memory gate for the self-hosted codegen: the bootstrap path
@@ -229,20 +288,29 @@ def main() -> int:
               f"AddressSanitizer ({cc})"
               + (f", compiled by {driver}" if driver else ""))
         rt_objs = _build_runtime_objects(cc, flags, Path(tmp), log)
+        _ensure_io_fixtures(programs)
 
         failures = []
         for path in programs:
             rel = path.relative_to(REPO_ROOT)
             try:
                 if driver is not None:
-                    clean, detail = _run_case_driver(path, Path(tmp), cc, flags,
-                                                     rt_objs, log, driver)
+                    clean, detail, rc = _run_case_driver(
+                        path, Path(tmp), cc, flags, rt_objs, log, driver)
                 else:
-                    clean, detail = _run_case(path, Path(tmp), cc, flags, rt_objs, log)
+                    clean, detail, rc = _run_case(path, Path(tmp), cc, flags,
+                                                  rt_objs, log)
             except subprocess.CalledProcessError as e:
-                clean, detail = False, f"build failed: {e.stderr.decode()[:200]}"
+                clean, detail, rc = (False,
+                                     f"build failed: {e.stderr.decode()[:200]}",
+                                     -1)
             except Exception as e:  # compile error: report, don't crash the run
-                clean, detail = False, f"{type(e).__name__}: {e}"[:200]
+                clean, detail, rc = False, f"{type(e).__name__}: {e}"[:200], -1
+            if clean:
+                want = _expected_exit(path)
+                if rc != want:
+                    clean = False
+                    detail = f"exit {rc}, expected {want}"
             status = "clean" if clean else "LEAK/ERROR"
             print(f"  {str(rel):40s} {status}"
                   + (f"  [{detail}]" if detail and not clean else ""))
