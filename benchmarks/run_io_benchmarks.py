@@ -285,6 +285,11 @@ def main():
     ap.add_argument("--conns", type=int, default=16)
     ap.add_argument("--rounds", type=int, default=64)
     ap.add_argument("--json", type=Path)
+    ap.add_argument("--strict", action="store_true",
+                    help="exit non-zero when a done-when criterion is not met. "
+                         "Off by default: the criteria have always been "
+                         "reported, never enforced, and two of them do not "
+                         "hold today (see DONE_WHEN below)")
     args = ap.parse_args()
     REPEATS = args.repeats
 
@@ -381,23 +386,57 @@ def main():
 
     print("\n== Phase 7 done-when ==")
     f, s, c = results["file"], results["socket"], results["cpu"]
-    print(f"  coroutines beat sequential blocking I/O:  "
-          f"{f['coro_vs_blocking']:.2f}x")
-    print(f"  coroutines beat a thread per file:         "
-          f"{f['coro_vs_threads']:.2f}x")
-    print(f"  coroutines vs async-Python (file):          "
-          f"{f['coro_vs_py_asyncio']:.2f}x  "
-          f"({'win' if f['coro_vs_py_asyncio'] >= 1 else 'LOSS'})")
-    print(f"  coroutines vs async-Python (socket):        "
-          f"{s['coro_vs_py_asyncio']:.2f}x  "
-          f"({'win' if s['coro_vs_py_asyncio'] >= 1 else 'LOSS'})")
-    print(f"  CPU work still scales across cores:         "
-          f"{c['speedup']:.2f}x")
+    # DONE_WHEN. Two of these are not met today, and --strict says so out
+    # loud instead of the script printing a failure and exiting 0.
+    #
+    #   beat a thread per file    0.12x, measured cold AND warm. This is a real
+    #                              shortfall, not a measurement artefact: with
+    #                              the page cache dropped before every run the
+    #                              thread-per-file path still finishes in ~2 ms
+    #                              against the coroutine path's ~16 ms.
+    #   beat sequential blocking  0.41x as measured here, and that is the
+    #                              fixture, not the scheduler. build_fixture
+    #                              writes the working set and the benchmark then
+    #                              reads it immediately, so every read is a page
+    #                              -cache hit and there is no I/O to overlap:
+    #                              65 MB in 5.0 ms is memcpy bandwidth. Evicting
+    #                              the cache before each run -- same binaries,
+    #                              same build -- gives 1.66x, because blocking
+    #                              reads then wait 27 ms and the coroutine path
+    #                              overlaps it. The criterion is meaningful only
+    #                              on a cold working set, and the thresholds are
+    #                              deliberately NOT retuned to hide that.
+    criteria = [
+        ("coroutines beat sequential blocking I/O", f["coro_vs_blocking"]),
+        ("coroutines beat a thread per file", f["coro_vs_threads"]),
+        ("coroutines vs async-Python (file)", f["coro_vs_py_asyncio"]),
+        ("coroutines vs async-Python (socket)", s["coro_vs_py_asyncio"]),
+        ("CPU work still scales across cores", c["speedup"]),
+    ]
+    failed = []
+    for label, value in criteria:
+        ok = value >= 1.0
+        if not ok:
+            failed.append((label, value))
+        print(f"  {label:<42} {value:6.2f}x  {'PASS' if ok else 'FAIL'}")
+    results["done_when"] = {label: value for label, value in criteria}
 
     if args.json:
         args.json.write_text(json.dumps(results, indent=2))
         print(f"\nwrote {args.json}")
 
+    if failed:
+        print(f"\n{len(failed)} of {len(criteria)} done-when criteria not met:",
+              file=sys.stderr)
+        for label, value in failed:
+            print(f"  {label}: {value:.2f}x (needs >= 1.00x)", file=sys.stderr)
+        if args.strict:
+            print("--strict: failing", file=sys.stderr)
+            return 1
+        print("(reported, not enforced; pass --strict to exit non-zero here)",
+              file=sys.stderr)
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
