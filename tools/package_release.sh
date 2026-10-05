@@ -246,12 +246,47 @@ itself. It is not part of compiling fray programs.
 EOF
 
 # 5. Archive.
+#
+# The archive is built so that rebuilding it produces the same bytes. Without
+# that, every rebuild changes the digest, which invalidates the published
+# SHA256SUMS and its signature for no reason: the files inside are identical.
+# Four things have to be pinned:
+#
+#   * file order    tar walks the filesystem in readdir order, which varies
+#   * mtimes        a rebuild updates them, and tar records them
+#   * ownership     the packager's uid/gid would otherwise leak in
+#   * the gzip header, which embeds a timestamp and the original filename
+#
+# The timestamp comes from the commit being packaged, so it changes only when
+# the source does. SOURCE_DATE_EPOCH overrides it.
 echo ""
 echo "--- archive ---"
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+    SOURCE_DATE_EPOCH=$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || true)
+fi
+[ -n "${SOURCE_DATE_EPOCH:-}" ] || SOURCE_DATE_EPOCH=1
+export SOURCE_DATE_EPOCH
+echo "  reproducible timestamp: $SOURCE_DATE_EPOCH ($(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%d %H:%M:%SZ' 2>/dev/null || echo 'epoch'))"
+
 cd "$DIST_DIR"
 rm -f "$PACKAGE_NAME.tar.gz" "$PACKAGE_NAME.zip"
 if [ "$ARCHIVE_EXT" = "tar.gz" ]; then
-    tar -czf "$PACKAGE_NAME.tar.gz" "$PACKAGE_NAME"
+    if tar --version 2>/dev/null | head -1 | grep -q 'GNU tar'; then
+        # gzip -n matters as much as the tar flags: without it the gzip header
+        # carries the current time and the member name.
+        tar --sort=name --format=gnu \
+            --mtime="@$SOURCE_DATE_EPOCH" \
+            --owner=0 --group=0 --numeric-owner \
+            -cf - "$PACKAGE_NAME" \
+            | gzip -n -9 > "$PACKAGE_NAME.tar.gz"
+    else
+        # bsdtar (macOS) has no --sort, so order the members ourselves. mtime
+        # and ownership are still pinned where it supports them.
+        echo "  note: bsdtar cannot fully normalise the archive; the Linux" >&2
+        echo "        release path (GNU tar) is the reproducible one." >&2
+        find "$PACKAGE_NAME" -print | LC_ALL=C sort \
+            | tar --mtime="@$SOURCE_DATE_EPOCH" -czf "$PACKAGE_NAME.tar.gz" -T -
+    fi
     ARCHIVE="$DIST_DIR/$PACKAGE_NAME.tar.gz"
 else
     if command -v zip >/dev/null 2>&1; then
