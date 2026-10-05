@@ -18,18 +18,32 @@ suite (refcounting, cycle collector, threads, coroutines) under the same
 sanitizer. This tool covers the other half: the code the compiler emits,
 run against an instrumented runtime.
 
+Two detectors, for two different failure shapes:
+
+  ASan (always)      every program, once. Catches the leaks and the memory
+                     errors the runtime makes on one thread.
+  valgrind --valgrind
+                     every program that uses threads, coroutines, channels or
+                     sockets, repeated. Catches the cross-thread lifetime bugs
+                     ASan cannot see -- see the note beside CONCURRENCY_RE for
+                     the measurement behind that, and for why memcheck and not
+                     helgrind.
+
 Usage:
     python tools/check_memory.py            # benchmarks (the heavy allocators)
     python tools/check_memory.py --all      # benchmarks + every golden case
+    python tools/check_memory.py --all --valgrind
     python tools/check_memory.py --keep-going
 
 Requires gcc/clang with libasan (Linux) or clang with ASan (macOS). Skips
-cleanly, with a warning, when no sanitizer-capable compiler is present.
+cleanly, with a warning, when no sanitizer-capable compiler is present, and
+skips the valgrind pass with a warning when valgrind is not installed.
 """
 
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -52,6 +66,54 @@ IO_PAYLOAD_LINE = "fray io benchmark payload line\n"
 IO_PAYLOAD_LINES = 200
 
 import target  # noqa: E402  (bootstrap/target.py)
+
+# ── Which programs the valgrind pass covers, and why it repeats them ──
+
+# Why this pass exists at all. ASan cannot see a cross-thread lifetime bug in
+# this runtime, and the cause is timing rather than configuration. On the
+# runtime as it stood before the loop-lock fix, ASan reported the
+# use-after-free 0 times in 240 runs spread over six ASAN_OPTIONS settings
+# (quarantine from 1 MB to 4 GB, detect_leaks off, halt_on_error off, strict
+# init order on) and 0 times in 40 runs at sixteen times the workload, while a
+# deliberate free-then-read control in the same binary was reported at once.
+# The window between a coroutine being queued for the loop and the store that
+# follows it is a couple of instructions wide, so at native speed the posting
+# thread always finishes first. memcheck's own scheduling does interleave it.
+#
+# memcheck and not helgrind: helgrind reports the race directly rather than the
+# symptom, which is what one would want, but it does not understand
+# swapcontext fibers -- on the fixed runtime it draws 310 errors from 4
+# contexts and 162959 suppressions for benchmarks/io_socket_coro.fray alone.
+# Making it usable would mean suppressing the very instrument meant to catch
+# this, so it is not the detector here.
+#
+# A program whose source reaches for threads, coroutines, channels or sockets.
+# The rule is the source text rather than a hand-kept list, so a new
+# concurrent program is covered the day it is written.
+CONCURRENCY_RE = re.compile(
+    r"\basync\s+def\b|\bchannel\(|\bspawn\b|\bthread\b|\btcpListen\b"
+    r"|\brunUntilComplete\b")
+
+# memcheck reports the cross-thread bug only when its scheduling interleaves
+# the two threads inside that window, which happened on 11 of 20 runs of
+# benchmarks/io_socket_coro.fray and 2 of 20 of io_file_coro.fray against the
+# pre-fix runtime. Ten repeats put the odds of missing it below one in ten
+# thousand for the first, and cost about a minute.
+VALGRIND_REPEATS = 10
+
+# An invalid access, a use of an uninitialised value, or a definitely-lost
+# block fails. "Still reachable" and "possibly lost" do not: the first is the
+# runtime's own pools and singletons, and the second is how a coroutine's
+# malloc'd fiber stack looks to memcheck, which is not told the block is a
+# stack. Neither is a defect and neither is silenced to make a count green --
+# they simply are not what this pass is looking for, and the leak check that
+# is looking for unreachable memory is the ASan pass above.
+VG_INVALID_RE = re.compile(
+    r"^==\d+== (Invalid read|Invalid write|Invalid free|Invalid delete)")
+VG_UNINIT_RE = re.compile(
+    r"^==\d+== (Conditional jump or move depends on uninitialised|"
+    r"Use of uninitialised value|Syscall param)")
+VG_LOST_RE = re.compile(r"definitely lost:\s*([\d,]+) bytes")
 
 
 def _int_constant(text: str, name: str, default: int) -> int:
@@ -134,18 +196,22 @@ def _build_runtime_objects(cc: str, flags: list, workdir: Path, log) -> list:
     return objs
 
 
-def _run_case(source_path: Path, workdir: Path, cc: str, flags: list,
-              rt_objs: list, log) -> tuple[bool, str, int]:
-    """Compile and run one program; return (clean, detail)."""
+def _build_exe(source_path: Path, workdir: Path, cc: str, flags: list,
+               rt_objs: list, tag: str) -> Path:
+    """Compile and link one program with `flags`; return the binary.
+
+    Shared by the two passes, which cannot share a build: memcheck needs an
+    uninstrumented binary, so the same source is compiled twice with different
+    flags rather than the passes reusing each other's objects.
+    """
     sys.path.insert(0, str(BOOTSTRAP_DIR))
     import codegen
 
     name = source_path.stem
-    obj = workdir / (name + ".o")
-    exe = workdir / (name + ".bin")
-    source = source_path.read_text()
+    obj = workdir / f"{name}.{tag}.o"
+    exe = workdir / f"{name}.{tag}.bin"
 
-    codegen.compile_to_object(source, str(obj), str(source_path))
+    codegen.compile_to_object(source_path.read_text(), str(obj), str(source_path))
     # Same link model as the compiler: the emitted objects use absolute
     # relocations, so a PIE link is not an option on Linux.
     link = [cc] + flags
@@ -155,8 +221,14 @@ def _run_case(source_path: Path, workdir: Path, cc: str, flags: list,
         link + ["-o", str(exe), str(obj)] + rt_objs + ["-lm", "-lpthread"],
         check=True, capture_output=True,
     )
+    return exe
 
-    return _run_under_asan(exe)
+
+def _run_case(source_path: Path, workdir: Path, cc: str, flags: list,
+              rt_objs: list, log) -> tuple[bool, str, int]:
+    """Compile and run one program; return (clean, detail)."""
+    return _run_under_asan(_build_exe(source_path, workdir, cc, flags, rt_objs,
+                                     "asan"))
 
 
 def _run_under_asan(exe: Path) -> tuple[bool, str, int]:
@@ -185,24 +257,116 @@ def _run_under_asan(exe: Path) -> tuple[bool, str, int]:
     return True, detail, proc.returncode
 
 
-def _run_case_driver(source_path: Path, workdir: Path, cc: str, flags: list,
-                     rt_objs: list, log, driver: Path) -> tuple[bool, str, int]:
-    """Same check, but the object is compiled by the native compiler driver.
+def _valgrind_flags() -> list:
+    """Flags for the uninstrumented build memcheck runs against.
 
-    This is the memory gate for the self-hosted codegen: the bootstrap path
-    above checks the Python emitter, and the ownership rules the two share
-    (a callee owns its parameters, argument lists own what they carry, and a
-    caller owns what a call returns) are exactly what drifts between them.
-    The driver's IR is emitted to an object by llc, or by llvmlite where llc
-    is not installed.
+    Deliberately the same optimisation and frame-pointer settings the ASan
+    build uses, so the two passes differ in the detector and not in the code.
     """
-    import shutil
+    return ["-g", "-O1", "-fno-omit-frame-pointer"]
+
+
+def _run_under_valgrind(exe: Path, repeats: int) -> tuple[bool, str]:
+    """memcheck one program `repeats` times; return (clean, detail).
+
+    Every repeat is checked and a single bad one fails, so repeating raises
+    the odds of catching an intermittent error without relaxing what counts as
+    one. --error-exitcode catches anything memcheck counts as an error, and the
+    stderr scan is there as well so the report that produced the failure can be
+    named rather than reduced to a number.
+    """
+    for attempt in range(repeats):
+        try:
+            proc = subprocess.run(
+                ["valgrind", "--error-exitcode=42", "--leak-check=full",
+                 "--show-leak-kinds=definite", "--num-callers=20", str(exe)],
+                capture_output=True, text=True, timeout=1800)
+        except subprocess.TimeoutExpired:
+            return False, f"timed out on repeat {attempt + 1}/{repeats}"
+        err = proc.stderr
+        detail = ""
+        for line in err.splitlines():
+            if VG_INVALID_RE.match(line):
+                detail = line.split("== ", 1)[-1].strip()
+                break
+            if VG_UNINIT_RE.match(line):
+                detail = line.split("== ", 1)[-1].strip()
+                break
+        if not detail:
+            lost = VG_LOST_RE.search(err)
+            if lost and lost.group(1) not in ("0", "0,0"):
+                detail = f"{lost.group(1)} bytes definitely lost"
+        if detail:
+            return False, f"repeat {attempt + 1}/{repeats}: {detail}"
+        if proc.returncode == 42:
+            return False, (f"repeat {attempt + 1}/{repeats}: memcheck reported "
+                           "an error with no recognised line")
+    return True, f"clean in {repeats} run(s)"
+
+
+def _valgrind_pass(programs: list, workdir: Path, cc: str, driver: Path,
+                   repeats: int, log) -> list:
+    """memcheck every program that uses threads, coroutines or sockets.
+
+    Additive: the ASan pass has already covered all of `programs` and still
+    does. This adds the failure mode ASan cannot see, and nothing here changes
+    what the ASan pass accepts.
+    """
+    targets = [p for p in programs
+               if CONCURRENCY_RE.search(p.read_text())]
+    if not targets:
+        print("check_memory: no concurrent programs to memcheck")
+        return []
+    if shutil.which("valgrind") is None:
+        print("check_memory: valgrind not installed — "
+              "skipping the cross-thread memory check")
+        return []
+
+    vg_dir = workdir / "vg"
+    vg_dir.mkdir(exist_ok=True)
+    rt_objs = _build_runtime_objects(cc, _valgrind_flags(), vg_dir, log)
+    print(f"check_memory: memcheck under valgrind, {len(targets)} concurrent "
+          f"program(s) x {repeats} run(s)")
+
+    failures = []
+    for path in targets:
+        rel = path.relative_to(REPO_ROOT)
+        try:
+            if driver is not None:
+                exe = _build_exe_driver(path, vg_dir, cc, _valgrind_flags(),
+                                        rt_objs, driver, "vg")
+            else:
+                exe = _build_exe(path, vg_dir, cc, _valgrind_flags(), rt_objs,
+                                 "vg")
+            clean, detail = _run_under_valgrind(exe, repeats)
+        except subprocess.CalledProcessError as e:
+            clean, detail = False, f"build failed: {e.stderr.decode()[:200]}"
+        except Exception as e:  # compile error: report, don't crash the run
+            clean, detail = False, f"{type(e).__name__}: {e}"[:200]
+        status = "clean" if clean else "LEAK/ERROR"
+        print(f"  {str(rel):40s} {status}  [{detail}]")
+        if not clean:
+            failures.append((rel, detail))
+    return failures
+
+
+def _build_exe_driver(source_path: Path, workdir: Path, cc: str, flags: list,
+                      rt_objs: list, driver: Path, tag: str) -> Path:
+    """Compile one program with the native compiler driver; return the binary.
+
+    This is the build the memory gate uses for the self-hosted codegen: the
+    bootstrap path checks the Python emitter, and the ownership rules the two
+    share (a callee owns its parameters, argument lists own what they carry,
+    and a caller owns what a call returns) are exactly what drifts between
+    them. The driver's IR is emitted to an object by llc, or by llvmlite where
+    llc is not installed.
+    """
     sys.path.insert(0, str(TOOLS_DIR))
     import frayc_selfhosted as host
 
     name = source_path.stem
-    obj = workdir / (name + ".driver.o")
-    exe = workdir / (name + ".driver.bin")
+    obj = workdir / f"{name}.{tag}driver.o"
+    exe = workdir / f"{name}.{tag}driver.bin"
     result = subprocess.run([str(driver), str(source_path)],
                             capture_output=True, text=True, timeout=600)
     out = result.stdout
@@ -212,7 +376,7 @@ def _run_case_driver(source_path: Path, workdir: Path, cc: str, flags: list,
                            else (result.stderr.strip().splitlines() or
                                  [f"driver exit {result.returncode}"])[-1][:160])
     ir_text = out.split("===IR_START===", 1)[1].split("===IR_END===", 1)[0]
-    ir_path = workdir / (name + ".driver.ll")
+    ir_path = workdir / f"{name}.{tag}driver.ll"
     ir_path.write_text(ir_text)
     # The driver's IR is host-agnostic, so llc emits for the host as it is.
     llc = host.find_llc()
@@ -229,7 +393,15 @@ def _run_case_driver(source_path: Path, workdir: Path, cc: str, flags: list,
         link + ["-o", str(exe), str(obj)] + rt_objs + ["-lm", "-lpthread"],
         check=True, capture_output=True,
     )
-    return _run_under_asan(exe)
+    return exe
+
+
+def _run_case_driver(source_path: Path, workdir: Path, cc: str, flags: list,
+                     rt_objs: list, log, driver: Path) -> tuple[bool, str, int]:
+    """Same check, but the object is compiled by the native compiler driver."""
+    return _run_under_asan(
+        _build_exe_driver(source_path, workdir, cc, flags, rt_objs, driver,
+                          "asan"))
 
 
 def main() -> int:
@@ -242,6 +414,11 @@ def main() -> int:
                     help="compile the programs with this native compiler driver "
                          "(build/frayc_driver) instead of the Python codegen — "
                          "the same ASan check for the self-hosted codegen")
+    ap.add_argument("--valgrind", action="store_true",
+                    help="additionally memcheck every program that uses "
+                         "threads, coroutines, channels or sockets, repeated "
+                         f"{VALGRIND_REPEATS} times — the cross-thread memory "
+                         "errors ASan cannot see (see CONCURRENCY_RE)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -320,15 +497,25 @@ def main() -> int:
                     break
 
         print()
+        if args.valgrind:
+            print("##### valgrind: cross-thread memory errors #####")
+            failures += _valgrind_pass(programs, Path(tmp), cc, driver,
+                                       VALGRIND_REPEATS, log)
+            print()
+
         if failures:
-            print(f"{len(failures)} of {len(programs)} programs are not clean:")
+            print(f"{len(failures)} program(s) are not clean:")
             for rel, detail in failures:
                 print(f"  {rel}: {detail}")
             print("Run the same program under ASan by hand to see the traces "
-                  "(see tools/check_memory.py for the exact flags).")
+                  "(see tools/check_memory.py for the exact flags), or under "
+                  "valgrind for the cross-thread check "
+                  "(--valgrind, flags in _run_under_valgrind).")
             return 1
         print(f"All {len(programs)} programs clean: no leaks, "
               "no memory errors.")
+        if args.valgrind:
+            print("Cross-thread pass clean under valgrind memcheck.")
         return 0
 
 

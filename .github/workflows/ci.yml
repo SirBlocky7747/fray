@@ -196,10 +196,17 @@ jobs:
       # Same LLVM as the test job, and for the same reason: this gate compiles
       # through the host driver, so with only the llvmlite backend available it
       # would measure emitted code from a compiler the release never ships.
-      - name: Install C toolchain and LLVM
+      #
+      # valgrind as well, for the other half of the memory gate: ASan cannot
+      # see a cross-thread lifetime bug in this runtime (the window is a
+      # couple of instructions wide and never interleaves at native speed --
+      # measured 0 reports in 240 runs across six ASAN_OPTIONS settings), so
+      # the concurrent programs are memchecked too. Linux only, which is where
+      # this job already is.
+      - name: Install C toolchain, LLVM and valgrind
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc wget gnupg
+          sudo apt-get install -y gcc wget gnupg valgrind
           codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
             | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
@@ -212,7 +219,7 @@ jobs:
         run: make -C runtime asan
 
       - name: Leak and memory-error check (benchmarks + golden cases)
-        run: python tools/check_memory.py --all --keep-going
+        run: python tools/check_memory.py --all --keep-going --valgrind
 
   benchmarks:
     runs-on: ubuntu-latest

@@ -15,6 +15,16 @@ echo "##### pipeline run (interpreter + self-hosted codegen, output diffed)"
 echo "##### memory gate (driver)"
 .venv/bin/python tools/check_memory.py --driver build/frayc_driver || echo "MEMORY_FAIL"
 
+# The cross-thread memory errors ASan cannot see. ASan reported the
+# loop_push_ready use-after-free 0 times in 240 runs across six ASAN_OPTIONS
+# settings, because the window is a couple of instructions wide and never
+# interleaves at native speed; memcheck does interleave it. Separate from the
+# line above because that one runs the self-hosted driver over the golden
+# cases, and the programs that expose this live in benchmarks/. Adds about a
+# minute.
+echo "##### memory gate (cross-thread, valgrind memcheck)"
+.venv/bin/python tools/check_memory.py --valgrind || echo "MEMORY_VG_FAIL"
+
 echo "##### python-free chain (sh-only golden runner)"
 sh tools/check_cases.sh || echo "CHECK_CASES_FAIL"
 
