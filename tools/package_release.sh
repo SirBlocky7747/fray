@@ -173,7 +173,37 @@ gated and packaged on. macOS and Windows are not supported yet.
 
 Nothing else — compiling and running a program never invokes Python.
 
+## Install
+
+This folder is the install. Unpack it anywhere — \`\$HOME/Desktop\`, \`/opt\`, a
+versioned directory you \`mv\` later — and it works from there: the compiler,
+the standard library and the runtime library are all found relative to the
+folder, not relative to the working directory. Nothing outside the folder is
+read or written except the program you are compiling.
+
+To run \`.fray\` files from anywhere, put its \`bin/\` on \`PATH\` once:
+
+\`\`\`sh
+export PATH="\$PWD/bin:\$PATH"          # from inside this folder
+\`\`\`
+
+Add that line to \`~/.bashrc\` (or \`~/.zshrc\`) to make it permanent. After that
+every \`.fray\` file on the machine runs through this one install, from any
+directory:
+
+\`\`\`sh
+fray run ~/projects/hello.fray
+fray build ~/projects/hello.fray -o hello
+./hello
+\`\`\`
+
+\`import random\` resolves out of \`stdlib/\` in this folder no matter where the
+program you are compiling lives, so a \`.fray\` file does not have to sit next
+to anything.
+
 ## Run a program
+
+Without touching \`PATH\`, from inside this folder:
 
 \`\`\`sh
 ./bin/fray run examples/hello.fray
