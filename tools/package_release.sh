@@ -278,11 +278,47 @@ with zipfile.ZipFile('$PACKAGE_NAME.zip', 'w', zipfile.ZIP_DEFLATED) as zf:
     ARCHIVE="$DIST_DIR/$PACKAGE_NAME.zip"
 fi
 
+# 6. Checksum, provenance and signature, alongside the archive.
+#
+# These are separate files rather than archive members on purpose: a checksum
+# of the archive cannot live inside the archive it describes.
+echo ""
+echo "--- checksum, provenance and signature ---"
+# `set -e` is on, so the status has to be captured with `||` rather than read
+# from `$?` on the next line, which would never be reached.
+SIGN_EXIT=0
+PY=""
+for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1; then PY="$candidate"; break; fi
+done
+[ -n "$PY" ] || { echo "package_release.sh: no python to run release_sign.py" >&2; exit 1; }
+# FRAY_ALLOW_UNSIGNED=1 lets a machine without a release key produce an unsigned
+# checksum file on purpose. The default is to fail instead.
+FRAY_ALLOW_UNSIGNED="${FRAY_ALLOW_UNSIGNED:-0}" \
+    "$PY" "$ROOT/tools/release_sign.py" --archive "$ARCHIVE" || SIGN_EXIT=$?
+
 echo ""
 echo "=== package ready ==="
 echo "  directory: $PACKAGE_DIR"
 echo "  archive:   $ARCHIVE"
+echo "  checksum:  $DIST_DIR/SHA256SUMS"
+echo "  provenance:$DIST_DIR/PROVENANCE.json"
+if [ -f "$DIST_DIR/SHA256SUMS.asc" ]; then
+    echo "  signature: $DIST_DIR/SHA256SUMS.asc"
+else
+    echo "  signature: (none — SHA256SUMS is unsigned)"
+fi
 echo ""
 echo "Verify it compiles a program with no Python in the loop:"
 echo "  tar -xzf $ARCHIVE -C /tmp && cd /tmp/$PACKAGE_NAME"
 echo "  ./bin/fray run examples/hello.fray"
+echo ""
+echo "Verify the artifacts:"
+echo "  cd $DIST_DIR && sha256sum -c SHA256SUMS"
+if [ -f "$DIST_DIR/SHA256SUMS.asc" ]; then
+    echo "  gpg --verify SHA256SUMS.asc SHA256SUMS"
+fi
+
+# An unsigned checksum file is a packaging failure unless it was asked for:
+# a release must never ship SHA256SUMS looking signed when it is not.
+exit "$SIGN_EXIT"

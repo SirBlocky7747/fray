@@ -409,8 +409,12 @@ jobs:
       - name: Build the runtime
         run: make -s -C runtime libfrayrt.a
 
+      # FRAY_ALLOW_UNSIGNED=1 because a runner has no release signing key, and
+      # signing with a key generated here would be worse than not signing: the
+      # signature would carry an identity nobody can ever verify. The release
+      # you publish is signed on a machine that holds the real key.
       - name: Package the release
-        run: bash tools/package_release.sh
+        run: FRAY_ALLOW_UNSIGNED=1 bash tools/package_release.sh
 
       # The release criterion, run from inside the archive rather than from
       # the checkout: what ships has to compile and run a program on its own.
