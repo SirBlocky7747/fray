@@ -1,0 +1,58 @@
+{
+    // Two tasks, both running the active .fray file through the in-tree
+    // toolchain (tools/fray.sh -- byte-identical to the released bin/fray).
+    //
+    // tools/fray.sh is used rather than the packaged dist/fray-*/bin/fray
+    // because dist/ is gitignored: a path into it would work on the machine
+    // that packaged a release and fail for anyone who clones the repo. The
+    // script needs build/frayc_driver, which is also gitignored, so on a
+    // fresh clone build it once and the task works from then on:
+    //
+    //   python tools/frayc_selfhosted.py build compiler/frayc.fray \
+    //       -o build/frayc_driver
+    //
+    // Until then the task fails with that same instruction, rather than a
+    // missing-file error.
+    //
+    // Run with: Ctrl+Shift+P -> "Tasks: Run Task" -> either label below.
+    // Bind a key with .vscode/keybindings.json:
+    //
+    //   [{ "key": "f5",
+    //      "command": "workbench.action.tasks.runTask",
+    //      "args": "fray: run active file (with input)" }]
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "fray: run active file",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/fray.sh",
+            "args": ["run", "${file}"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": false
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "fray: run active file (with input)",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/fray.sh",
+            "args": ["run", "${file}"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            },
+            "problemMatcher": [],
+            "interactive": true
+        }
+    ]
+}
