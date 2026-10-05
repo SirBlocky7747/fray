@@ -190,6 +190,40 @@ def oracle_output(fray_path: Path) -> str:
     return buf.getvalue()
 
 
+def evict(paths):
+    """Drop the page cache backing `paths`, so the next read waits for disk.
+
+    This is what makes the file workload measure I/O at all. build_fixture
+    writes the working set and the benchmark then reads it back immediately,
+    so without this every read is a page-cache hit: 65 MB in 5.0 ms is memcpy
+    bandwidth, there is no wait for a coroutine to overlap, and the
+    "coroutines beat sequential blocking I/O" criterion ends up comparing two
+    CPU loops. Measured on the same binaries, evicting first takes that
+    criterion from 0.41x to 1.73x.
+
+    posix_fadvise(POSIX_FADV_DONTNEED) only works on a real filesystem -- on
+    tmpfs the pages belong to the fs, not the page cache, and the call is a
+    no-op. DATA_DIR is /tmp, which is ext4 here; the fixture's filesystem is
+    printed at startup so a tmpfs run says so instead of quietly measuring
+    memory again. Returns True if eviction is actually available.
+    """
+    if not hasattr(os, "posix_fadvise"):
+        return False
+    for p in paths:
+        try:
+            fd = os.open(p, os.O_RDONLY)
+        except OSError:
+            continue
+        try:
+            os.fdatasync(fd)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        except OSError:
+            return False
+        finally:
+            os.close(fd)
+    return True
+
+
 def build_fixture(n: int, kb: int) -> int:
     """Create the working set. It has to be big enough to leave the cache:
     with a few hundred KB of 6 KB files the whole workload lands in L3 and
@@ -221,11 +255,18 @@ def compile_with_driver(src_path: Path, exe: Path) -> None:
         raise RuntimeError(f"driver build failed: {r.stderr[-400:]}")
 
 
-def time_cmd(cmd, cwd=None, timeout=600):
-    """Best-of-N wall time, in seconds."""
+def time_cmd(cmd, cwd=None, timeout=600, evict_paths=None):
+    """Best-of-N wall time, in seconds.
+
+    With `evict_paths`, the page cache is dropped before EVERY repeat, not
+    once: best-of-N over a working set that run 2 and 3 have already paged in
+    would report the warm number the caller is trying to avoid.
+    """
     best = None
     out = None
     for _ in range(REPEATS):
+        if evict_paths:
+            evict(evict_paths)
         t0 = time.perf_counter()
         r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
                            timeout=timeout)
@@ -241,7 +282,8 @@ def exe_for(name: str) -> str:
     return "bench_" + name.replace(".fray", "") + target.exe_suffix()
 
 
-def run_fray(name: str, ops: int, conns: int, rounds: int, label: str):
+def run_fray(name: str, ops: int, conns: int, rounds: int, label: str,
+             evict_paths=None):
     """Substitute the constants into a benchmark, compile, verify, time."""
     src = (BENCH_DIR / name).read_text()
     for const, val in (("NFILES", ops), ("DIR", f'"{DATA_DIR}"'),
@@ -254,7 +296,7 @@ def run_fray(name: str, ops: int, conns: int, rounds: int, label: str):
     expected = oracle_output(work)
     exe = DATA_DIR / exe_for(name)
     compile_with_driver(work, exe)
-    secs, out = time_cmd([str(exe)])
+    secs, out = time_cmd([str(exe)], evict_paths=evict_paths)
     if out != expected:
         raise RuntimeError(f"{label}: output mismatch\n"
                            f" compiled: {out!r}\n oracle:   {expected!r}")
@@ -285,6 +327,10 @@ def main():
     ap.add_argument("--conns", type=int, default=16)
     ap.add_argument("--rounds", type=int, default=64)
     ap.add_argument("--json", type=Path)
+    ap.add_argument("--no-evict", action="store_true",
+                    help="leave the page cache in place. The file criteria "
+                         "then measure memcpy rather than I/O and are not "
+                         "meaningful; kept only to reproduce the old numbers")
     ap.add_argument("--strict", action="store_true",
                     help="exit non-zero when a done-when criterion is not met. "
                          "Off by default: the criteria have always been "
@@ -297,6 +343,21 @@ def main():
     total_mb = args.nf * size / 1e6
     print(f"fixture: {args.nf} files x {size/1024:.0f} KB "
           f"= {total_mb:.0f} MB in {DATA_DIR}")
+    # The file criteria are only about I/O if the reads are not served from
+    # the page cache, so say plainly whether this run will drop it, and
+    # whether the filesystem can honour that at all.
+    fixture_files = [DATA_DIR / f"f{i}.txt" for i in range(args.nf)]
+    cold = not args.no_evict and evict(fixture_files)
+    fstype = "unknown"
+    try:
+        fstype = subprocess.run(["stat", "-f", "-c", "%T", str(DATA_DIR)],
+                                capture_output=True, text=True
+                                ).stdout.strip() or "unknown"
+    except OSError:
+        pass
+    print(f"fixture filesystem: {fstype} (page-cache eviction "
+          f"{'works here' if 'tmpfs' not in fstype else 'CANNOT work on tmpfs'})")
+    print(f"file reads: {'COLD -- cache dropped before every run' if cold else 'WARM -- page cache left in place, so these are memcpy, not I/O'}")
 
     results = {}
 
@@ -315,11 +376,14 @@ def main():
 
     print("\n== file I/O: %d reads of %d KB ==" % (args.nf, size // 1024))
     t_coro = net(run_fray("io_file_coro.fray", args.nf, args.conns, args.rounds,
-                          "io_file_coro"))
+                          "io_file_coro",
+                          fixture_files if cold else None))
     t_thr = net(run_fray("io_file_threads.fray", args.nf, args.conns,
-                         args.rounds, "io_file_threads"))
+                         args.rounds, "io_file_threads",
+                         fixture_files if cold else None))
     t_blk = net(run_fray("io_file_blocking.fray", args.nf, args.conns,
-                         args.rounds, "io_file_blocking"))
+                         args.rounds, "io_file_blocking",
+                         fixture_files if cold else None))
     total_bytes = args.nf * size
     t_pyb = run_python(py_file_blocking(args.nf), "py blocking", str(total_bytes),
                        "io_file_blocking")
@@ -386,26 +450,17 @@ def main():
 
     print("\n== Phase 7 done-when ==")
     f, s, c = results["file"], results["socket"], results["cpu"]
-    # DONE_WHEN. Two of these are not met today, and --strict says so out
-    # loud instead of the script printing a failure and exiting 0.
+    # DONE_WHEN. The file criteria are read cold (see evict/time_cmd), so they
+    # measure blocking I/O and a coroutine's ability to overlap it, which is
+    # what they claim to be about.
     #
-    #   beat a thread per file    0.12x, measured cold AND warm. This is a real
-    #                              shortfall, not a measurement artefact: with
-    #                              the page cache dropped before every run the
-    #                              thread-per-file path still finishes in ~2 ms
-    #                              against the coroutine path's ~16 ms.
-    #   beat sequential blocking  0.41x as measured here, and that is the
-    #                              fixture, not the scheduler. build_fixture
-    #                              writes the working set and the benchmark then
-    #                              reads it immediately, so every read is a page
-    #                              -cache hit and there is no I/O to overlap:
-    #                              65 MB in 5.0 ms is memcpy bandwidth. Evicting
-    #                              the cache before each run -- same binaries,
-    #                              same build -- gives 1.66x, because blocking
-    #                              reads then wait 27 ms and the coroutine path
-    #                              overlaps it. The criterion is meaningful only
-    #                              on a cold working set, and the thresholds are
-    #                              deliberately NOT retuned to hide that.
+    # "coroutines beat a thread per file" is not met, and is a real shortfall
+    # rather than a measurement artefact: cold, the thread-per-file path still
+    # finishes in about 2 ms against the coroutine path's ~16 ms. That is
+    # pre-existing product behaviour, the thresholds are deliberately NOT
+    # retuned to hide it, and --strict is therefore NOT wired into gates.sh --
+    # turning the release's memory gate red on a known scheduler shortfall is
+    # a decision for whoever owns that call, not one to make silently.
     criteria = [
         ("coroutines beat sequential blocking I/O", f["coro_vs_blocking"]),
         ("coroutines beat a thread per file", f["coro_vs_threads"]),
