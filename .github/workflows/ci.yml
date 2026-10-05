@@ -277,6 +277,13 @@ jobs:
       # Linux (see plan.md Phase 5), so this is a real gate again — with a
       # 1.25x tolerance, because runner timing is noisy and `list_sum`
       # clears its bar by ~10-15%.
+      #
+      # It compares medians, not minima. The two sides are timed interleaved
+      # so both see the same machine state, and the minimum of a few runs is
+      # the statistic a single lucky run moves most. Comparing minima is what
+      # produced the 1.33x red: CPython drew 0.079s on one run against
+      # compiled's normal 0.105s, with nothing wrong in either program.
+      # The tolerance is unchanged; only the statistic it is applied to is.
       - name: Compiled vs CPython
         run: |
           python - <<'EOF'
@@ -289,13 +296,14 @@ jobs:
           for name, res in data.items():
               if "error" in res:
                   raise SystemExit(f"{name}: benchmark error: {res['error']}")
-              cpy = res.get("cpython_best")
+              cmp_t = res.get("compiled_median", res["compiled_best"])
+              cpy = res.get("cpython_median") or res.get("cpython_best")
               if not cpy:
-                  print(f"{name}: compiled {res['compiled_best']:.3f}s (no CPython bar)")
+                  print(f"{name}: compiled {cmp_t:.3f}s (no CPython bar)")
                   continue
-              ratio = res["compiled_best"] / cpy
+              ratio = cmp_t / cpy
               verdict = "beats" if ratio <= 1.0 else "trails"
-              print(f"{name}: compiled {res['compiled_best']:.3f}s "
+              print(f"{name}: compiled {cmp_t:.3f}s "
                     f"{verdict} CPython {cpy:.3f}s ({ratio:.2f}x)")
               if ratio > TOLERANCE:
                   failed = True

@@ -25,6 +25,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from statistics import median
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "bootstrap"))
@@ -139,43 +140,60 @@ def bench_one(name: str, repeats: int):
     compile_program(src, str(exe), name)
 
     times = []
+    py_times = []
     out = None
+    py_out = None
+
+    # CPython translation, written before the timed loop so both sides can be
+    # interleaved rather than measured in two separate blocks.
+    py_src = CPYTHON_VERSIONS[name]
+    py_file = BENCH_DIR / ("bench_" + name.replace(".fray", ".py"))
+    py_file.write_text(py_src)
+
+    # Interleaved on purpose. Timing all of one side and then all of the other
+    # lets a slow patch of runner time inflate one and deflate the other. That
+    # is exactly how a healthy run reported compiled fray 33% slower than
+    # CPython: CPython drew a lucky 0.079s against a normal 0.105s, and the
+    # gate compares the two numbers directly.
     for _ in range(repeats):
         dt, r = time_once([str(exe)])
         out = r.stdout
         if r.returncode != 0:
             raise RuntimeError(f"{name}: compiled run failed: {r.stderr[:200]}")
         times.append(dt)
+
+        dt, r = time_once([sys.executable, str(py_file)])
+        py_out = r.stdout
+        py_times.append(dt)
+
     if out != expected:
         raise RuntimeError(
             f"{name}: output mismatch\n compiled: {out!r}\n oracle:   {expected!r}")
 
-    # CPython translation
-    py_times = []
-    py_src = CPYTHON_VERSIONS[name]
-    py_file = BENCH_DIR / ("bench_" + name.replace(".fray", ".py"))
-    py_file.write_text(py_src)
-    py_out = None
-    for _ in range(repeats):
-        dt, r = time_once([sys.executable, str(py_file)])
-        py_out = r.stdout
-        py_times.append(dt)
     if py_out.replace("\r\n", "\n") != expected:
         print(f"  warning: {name}: CPython translation output differs; "
               f"skipping CPython bar", file=sys.stderr)
         py_times = []
 
+    # `compiled_best` / `cpython_best` stay as the minimum: the committed
+    # baselines were recorded that way and changing the meaning would
+    # invalidate them. The gate compares these two numbers against each other,
+    # so it gets the median, which a single lucky run cannot move much.
     return {
         "compiled_best": min(times),
+        "compiled_median": median(times),
         "compiled_all": times,
         "cpython_best": min(py_times) if py_times else None,
+        "cpython_median": median(py_times) if py_times else None,
         "output": out.strip(),
     }
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repeats", type=int, default=3)
+    ap.add_argument("--repeats", type=int, default=5,
+                    help="runs per side, interleaved; the median of these is "
+                         "what the CPython gate compares")
     ap.add_argument("--baseline", type=str, default=None,
                     help="JSON file to diff against (and to which none is written)")
     args = ap.parse_args(argv)
@@ -199,12 +217,13 @@ def main(argv=None):
             results[name] = {"error": str(e)}
             continue
         results[name] = res
-        cpy = res["cpython_best"]
+        cmp_t = res["compiled_median"]
+        cpy = res["cpython_median"]
         if cpy:
-            speedup = cpy / res["compiled_best"]
-            print(f"{name:<16} {res['compiled_best']:>9.3f}s {cpy:>9.3f}s {speedup:>8.1f}x")
+            speedup = cpy / cmp_t
+            print(f"{name:<16} {cmp_t:>9.3f}s {cpy:>9.3f}s {speedup:>8.1f}x")
         else:
-            print(f"{name:<16} {res['compiled_best']:>9.3f}s {'n/a':>10}")
+            print(f"{name:<16} {cmp_t:>9.3f}s {'n/a':>10}")
 
     bad = False
     # A benchmark that failed to run fails the run, whether or not there is a
