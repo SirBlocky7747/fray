@@ -247,8 +247,19 @@ static void loop_push_ready(EventLoop *loop, Coro *c) {
      * short. This is what turns the old 1 ms poll into a real wakeup. */
     loop->wake = true;
     pthread_cond_signal(&loop->cv);
-    pthread_mutex_unlock(&loop->lock);
+    /* The phase write belongs inside the lock, and that is the whole point of
+     * this function: linking `c` into the queue is what makes the loop able to
+     * run it, so the moment the lock is dropped the loop thread may pick `c`
+     * up, run it to completion and drop the last reference to it (an I/O
+     * completion releases the coroutine's hold as soon as it has the job),
+     * which frees it. Storing the phase after the unlock therefore wrote into
+     * freed memory -- valgrind caught it as an invalid 4-byte write at the
+     * phase field, offset 8 of a 96-byte Coro, in about 8 runs in 10 of
+     * benchmarks/io_socket_coro.fray. With the store under the lock this is
+     * the last thing any thread does to `c`, and everything that can free it
+     * waits on the same lock. */
     c->phase = CORO_READY;
+    pthread_mutex_unlock(&loop->lock);
 }
 
 static bool loop_pop_ready(EventLoop *loop, Coro **out) {
