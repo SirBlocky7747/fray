@@ -167,7 +167,8 @@ gated and packaged on. macOS and Windows are not supported yet.
 
 ## Requirements
 
-* LLVM's \`llc\` object emitter (\`llc-14\` through \`llc-18\` all work)
+* LLVM's \`llc\` object emitter — the chain looks for \`llc-22\` down to
+  \`llc-14\`, or plain \`llc\`, and uses the first one it finds on \`PATH\`
 * a C compiler (\`cc\`, \`gcc\` or \`clang\`) to link the runtime
 
 Nothing else — compiling and running a program never invokes Python.
