@@ -219,6 +219,24 @@ def gpg_passphrase() -> tuple[list[str], str | None]:
     return ["--pinentry-mode", "loopback", "--passphrase-fd", "0"], pw
 
 
+def export_public_key(dist: Path, key: str, env: dict) -> Path | None:
+    """Publish the public key beside the release.
+
+    Without this, verifying the signature means fetching the key from wherever
+    the download page says -- which is no trust anchor at all. Shipping it with
+    the release keeps the fingerprint in the repository, which is the thing a
+    verifier can actually check.
+    """
+    if not shutil.which("gpg"):
+        return None
+    r = run(["gpg", "--batch", "--armor", "--export", key], env=env)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    pub = dist / "fray-release-key.asc"
+    pub.write_text(r.stdout)
+    return pub
+
+
 def sign_gpg(sums: Path, sig: Path, key: str, env: dict) -> tuple[str, bool]:
     pw_args, pw = gpg_passphrase()
     r = subprocess.run(
@@ -367,6 +385,9 @@ def main() -> int:
             sys.exit("release_sign.py: --signer gpg but no usable secret key found")
         state, ok = sign_gpg(sums, sig, key, env)
         print(f"wrote    {sig.name}  (gpg key {key}, {state})")
+        pub = export_public_key(dist, key, env)
+        if pub:
+            print(f"wrote    {pub.name}  (public key for the same fingerprint)")
     else:
         if not args.signing_key:
             sys.exit("release_sign.py: --signer ssh needs --signing-key / $FRAY_SIGNING_KEY")

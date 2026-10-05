@@ -89,3 +89,30 @@ Stated plainly rather than tuned away. All are measured, not estimated.
 - all 12 examples run through the extracted archive
 - `benchmarks/io_socket_coro.fray` built by the packaged compiler: 10/10 runs
   printing `32`, valgrind clean
+- the archive is bit-reproducible: independent builds from the same commit
+  produce an identical digest
+
+### Release signing
+
+Every release publishes the archive alongside `SHA256SUMS`, a detached
+signature `SHA256SUMS.asc`, the signing key as `fray-release-key.asc`, and a
+SLSA v0.2 provenance attestation (`PROVENANCE.json` and `PROVENANCE.md`).
+
+The signing key is a 4096-bit RSA key, never expiring, under the uid
+`The fray authors <fray-authors@users.noreply.github.com>`, fingerprint:
+
+```
+29A4 4B56 DA1D ABA0 208E  9FFC D616 E3CC 417B F393
+```
+
+The fingerprint is recorded here and in `README.md` because that is the trust
+anchor: a signature only says something once you have checked *which* key made
+it against a source you already trust. The key is not pushed to a public
+keyserver, since that would mail the uid to every subscriber of that keyserver;
+`fray-release-key.asc` ships with the release instead.
+
+Packaging refuses to emit an unsigned `SHA256SUMS` unless `FRAY_ALLOW_UNSIGNED=1`
+is set explicitly, and a signature that does not verify is a failure rather
+than a warning. CI sets that variable, because a runner holds no release key
+and signing with one generated there would carry an identity nobody could
+verify.

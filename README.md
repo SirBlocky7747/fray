@@ -28,6 +28,48 @@ which is why the memory gate also memchecks the concurrent programs.
 
 See `plan.md` for the full build plan and `fray-layout.md` for the syntax reference.
 
+### Verifying a release
+
+Each release publishes six files: the archive, `SHA256SUMS`, `SHA256SUMS.asc`,
+the signing key as `fray-release-key.asc`, and a SLSA v0.2 provenance
+attestation as `PROVENANCE.json` and `PROVENANCE.md`.
+
+```bash
+sha256sum -c SHA256SUMS                                 # the digest matches
+gpg --verify SHA256SUMS.asc SHA256SUMS                  # the signature is genuine
+```
+
+The signature is made by a 4096-bit RSA key under the uid
+`The fray authors <fray-authors@users.noreply.github.com>` — the same identity
+this repository's commits and tag signatures use:
+
+```
+29A4 4B56 DA1D ABA0 208E  9FFC D616 E3CC 417B F393
+```
+
+`gpg --verify` proves the signature matches *a* key with that fingerprint. It
+does not prove the key is the one above, so compare the fingerprint against
+this file — which is versioned in the repository alongside the tag — rather than
+against whatever the download page happens to say.
+
+The key is deliberately **not** published to a public keyserver, because doing
+so emails the uid to every subscriber of that keyserver. Fetch the public key
+from this repository instead:
+
+```bash
+curl -sLO https://github.com/SirBlocky7747/fray/releases/download/v0.1.0/fray-release-key.asc
+gpg --import fray-release-key.asc
+```
+
+The archive is bit-reproducible: the member order, timestamps, ownership and
+gzip header are all pinned, and the timestamp is the commit being packaged, so
+rebuilding from the same commit produces the same digest. You can recompute it
+rather than trusting the published one:
+
+```bash
+git checkout v0.1.0 && bash tools/package_release.sh && sha256sum dist/*.tar.gz
+```
+
 ## Quick start
 
 ```bash
