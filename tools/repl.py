@@ -183,16 +183,16 @@ def is_expression(line):
             before_eq = parts[0].rstrip()
             if before_eq and before_eq[-1] not in ("!", "<", ">", "+", "-", "*", "/", "%", "^"):
                 return False
-    # Skip bare function calls (they're statements)
+    # Only the calls whose result is not the point are statements. print
+    # already writes its own output; exit and clear are REPL commands and
+    # input prompts on stdin. Everything else -- len, range, str, abs, sum,
+    # Ok, isNone and the rest of the builtins -- is a value the user asked to
+    # see, and listing them here silently swallowed it: typing len(xs)
+    # returned nothing at all, which reads as a broken REPL rather than as a
+    # deliberate rule.
     if "(" in stripped and ")" in stripped:
-        # Could be a function call or expression — check if it's standalone
         func_name = stripped.split("(")[0].strip()
-        if func_name in ("print", "exit", "clear", "range", "len",
-                         "str", "int", "float", "abs", "sqrt",
-                         "isqrt", "round", "min", "max", "sum",
-                         "mean", "med", "mid", "mode", "chr", "ord",
-                         "Some", "Ok", "Err", "unwrap", "isSome",
-                         "isNone", "isOk", "isErr", "input"):
+        if func_name in ("print", "exit", "clear", "input"):
             return False
     return True
 
