@@ -16,9 +16,15 @@ builds the first native compiler and hosts the oracle the tests diff against.
 `import random` resolves from any working directory — `stdlib/random.fray` is a pure-fray
 31-bit LCG with `seed`, `randomInt`, `randomFloat`, `choice` and `shuffle`.
 
-`tools/package_release.sh` turns that into a downloadable archive for this host — the
-compiler binary, the runtime, the `fray` front end, the examples and the docs, with
-nothing in the compile loop but `frayc_driver` → `llc` → `cc`.
+`tools/package_release.sh` turns that into a downloadable Linux x86-64 archive —
+the compiler binary, the runtime, the `fray` front end, the examples and the docs,
+with nothing in the compile loop but `frayc_driver` → `llc` → `cc`.
+
+Two things are measured and not yet good enough, both stated here rather than
+papered over: the coroutine file path reaches **0.12x** of a thread-per-file on
+cold reads (`benchmarks/run_io_benchmarks.py --strict` reports it), and
+AddressSanitizer alone cannot see cross-thread lifetime bugs in this runtime,
+which is why the memory gate also memchecks the concurrent programs.
 
 See `plan.md` for the full build plan and `fray-layout.md` for the syntax reference.
 
@@ -34,7 +40,7 @@ See `plan.md` for the full build plan and `fray-layout.md` for the syntax refere
 ./program
 ./tools/fray.sh ir program.fray               # or just look at the LLVM IR
 
-# 3. Package a release for this OS (compiler + runtime + examples + docs)
+# 3. Package a release (compiler + runtime + examples + docs)
 bash tools/package_release.sh
 #   dist/fray-0.1.0-linux-x86_64.tar.gz — extract it and:
 #   ./bin/fray run examples/hello.fray
@@ -68,8 +74,16 @@ fray/
 
 ## Building
 
-Primary development target is **Linux** (developed on Linux Mint 22 / Ubuntu 24.04,
-also runs on macOS and Windows via MinGW-w64).
+v0.1.0 ships for **Linux x86-64 only**. That is the platform it is developed,
+gated and packaged on, and the only one whose archive has been built, extracted
+and run end to end. macOS and Windows are not supported yet: `package_release.sh`
+still has branches for both, and the source builds there, but no release has
+been verified on either — the compiler build fails on the macOS SDK, and the
+Windows runner cannot locate `llc` after installing it. Treat them as
+unproven, not as working. The 0.1.0 artifact is
+`fray-0.1.0-linux-x86_64.tar.gz`.
+
+Developed on Linux Mint 22 / Ubuntu 24.04 (glibc, ext4).
 
 ### Requirements
 

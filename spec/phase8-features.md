@@ -222,7 +222,7 @@ The codegen emits LLVM `declare` directives for each `extern def`, then generate
 normal `call` instructions at usage sites. The linker resolves the symbols.
 
 For Phase 8, only the following C functions are supported (all available on
-Linux, macOS, and Windows via MinGW):
+every platform fray targets; v0.1.0 is released and gated for Linux x86-64):
 
 | Function | C signature | fray usage |
 |---|---|---|

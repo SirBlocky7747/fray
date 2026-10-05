@@ -138,6 +138,7 @@ chmod +x "$PACKAGE_DIR/tools/check_cases.sh" "$PACKAGE_DIR/tools/frayc.sh" \
 echo "--- examples, docs, spec, tests ---"
 cp -R "$ROOT/examples/." "$PACKAGE_DIR/examples/"
 cp "$ROOT/README.md" "$PACKAGE_DIR/" 2>/dev/null || true
+cp "$ROOT/CHANGELOG.md" "$PACKAGE_DIR/" 2>/dev/null || true
 # The syntax reference the release criterion is written against, and the audit
 # that holds the compiler to it (it needs the reference, the case manifest the
 # pins are recorded in, and the oracle it diffs against). The reference has
@@ -160,6 +161,9 @@ cat > "$PACKAGE_DIR/QUICKSTART.md" << EOF
 
 fray compiles straight to a native binary: no interpreter, no runtime Python,
 and no GIL.
+
+This archive is for **Linux x86-64**, the platform fray $VERSION is released,
+gated and packaged on. macOS and Windows are not supported yet.
 
 ## Requirements
 
