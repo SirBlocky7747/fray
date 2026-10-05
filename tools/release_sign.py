@@ -24,6 +24,9 @@ Signing keys are discovered, never created:
 
 Environment:
   FRAY_SIGNING_KEY   GPG key id/uid, or (with --signer ssh) the private key path
+  FRAY_SIGNING_PASSPHRASE
+                     passphrase for a protected GPG key, read on stdin rather
+                     than from argv so it does not show up in `ps`
   FRAY_GNUPGHOME     use an alternate GnuPG home (for tests)
 """
 from __future__ import annotations
@@ -203,14 +206,39 @@ def gpg_usable(env: dict, key: str | None) -> str | None:
     return None
 
 
-def sign_gpg(sums: Path, sig: Path, key: str, env: dict) -> str:
-    r = run(
+def gpg_passphrase() -> tuple[list[str], str | None]:
+    """Args for signing with a passphrase-protected key.
+
+    `gpg --batch` never prompts: on a protected key it just fails. Loopback
+    mode with the passphrase arriving on stdin is the non-interactive way to
+    sign one. The passphrase is kept out of argv, where `ps` would show it.
+    """
+    pw = os.environ.get("FRAY_SIGNING_PASSPHRASE")
+    if not pw:
+        return [], None
+    return ["--pinentry-mode", "loopback", "--passphrase-fd", "0"], pw
+
+
+def sign_gpg(sums: Path, sig: Path, key: str, env: dict) -> tuple[str, bool]:
+    pw_args, pw = gpg_passphrase()
+    r = subprocess.run(
         ["gpg", "--batch", "--yes", "--armor", "--detach-sign",
-         "--local-user", key, "--output", str(sig), str(sums)],
-        env=env,
+         "--local-user", key, "--output", str(sig), *pw_args, str(sums)],
+        env=env, input=pw, capture_output=True, text=True,
     )
     if r.returncode != 0:
-        raise SystemExit(f"gpg signing failed:\n{r.stderr.strip()}")
+        err = (r.stderr or "").lower()
+        hint = ""
+        # gpg reports a locked key several ways depending on version and
+        # whether an agent is reachable: "Operation cancelled", "no pinentry",
+        # or an explicit passphrase complaint.
+        if not pw and any(w in err for w in
+                          ("passphrase", "operation cancelled", "pinentry",
+                           "secret key is not available", "locked")):
+            hint = ("\n  This key is passphrase-protected and could not be unlocked:"
+                    "\n    export FRAY_SIGNING_PASSPHRASE=<passphrase>"
+                    "\n  or use a release key with no passphrase.")
+        raise SystemExit(f"gpg signing failed:\n{r.stderr.strip()}{hint}")
     r2 = run(["gpg", "--batch", "--verify", str(sig), str(sums)], env=env)
     if r2.returncode == 0:
         return "verified", True
